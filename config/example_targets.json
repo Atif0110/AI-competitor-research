@@ -1,0 +1,14 @@
+{
+  "targets": [
+    {
+      "company": "Acme Audio",
+      "website": "https://acme.example.com",
+      "regions": ["US", "EU", "UK", "IN", "JP"],
+      "focus_products": ["Pro X Headphones", "Lite Earbuds", "Studio Mic 2"],
+      "competitors": [
+        {"name": "SoundWorks", "website": "https://soundworks.example.com"},
+        {"name": "GloboTech", "website": "https://globo.example.com"}
+      ]
+    }
+  ]
+}

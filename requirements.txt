@@ -1,0 +1,18 @@
+# Core — required for the pipeline (tests + demo mode run on these)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+requests>=2.31
+python-dotenv>=1.0
+reportlab>=4.0
+pytest>=8.0
+
+# Optional — install only the pieces you actually use
+# streamlit>=1.33      # dashboard (pip install streamlit)
+# chromadb>=0.4.24     # vector store for reviews / RAG
+# groq>=0.9            # cheap extraction model (volume step)
+# openai>=1.30         # analysis model
+# anthropic>=0.28      # analysis model
+# firecrawl>=0.0.16    # scraping layer 1
+# playwright>=1.44     # scraping layer 2 (python -m playwright install chromium)
+httpx2==2.12.0

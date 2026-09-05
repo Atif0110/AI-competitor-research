@@ -1,0 +1,16 @@
+# Render.com blueprint — deploy the FastAPI service without touching YAML drift.
+# Alternative: single-service config via render.yaml in the repo root of the
+# connected repo. Set env vars on the service dashboard (copy from .env.example).
+services:
+  - type: web
+    name: ai-competitor-research
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:///data/competitor.db
+      - key: LLM_PROVIDER
+        value: demo

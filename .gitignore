@@ -1,0 +1,35 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Runtime data (generated)
+data/*
+!data/.gitkeep
+
+# Logs
+*.log
+
+# Playwright
+ms-playwright/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
