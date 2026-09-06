@@ -1,4 +1,4 @@
-# AI Competitor Research Tool — v3
+# AI Competitor Research Tool
 
 An agent-driven competitive intelligence system: target + competitor graph ×
 regions × discovered product pages, fetched **once per execution region**,
