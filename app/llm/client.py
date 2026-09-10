@@ -1,10 +1,23 @@
 """Provider-agnostic chat client with a real cross-provider fallback chain
 and circuit breaker.
 
-Chain: groq -> openai -> anthropic. ALL configured providers are added.
+Provider selection (v5 — auto-switch on whichever key is present):
+    - ANTHROPIC_API_KEY only  -> Claude is primary
+    - OPENAI_API_KEY only     -> GPT is primary
+    - both set                -> LLM_PROVIDER decides primary ("openai" or
+                                  "anthropic"); defaults to Claude if unset.
+                                  Whichever of the two is NOT primary becomes
+                                  the automatic fallback.
+    - GROQ_API_KEY            -> always appended to the END of the chain as an
+                                  optional fast/cheap extra fallback, never
+                                  forced ahead of GPT/Claude.
+    - LLM_PROVIDER can also be forced to a single provider name ("groq",
+      "openai", "anthropic", "demo") to pin the chain to exactly that one.
+    - no keys at all          -> demo provider (unchanged).
+
 Telemetry separates API attempts from logical requests:
     llm_calls         = logical requests (1 per complete())
-    provider_attempts = actual provider API calls (Groq fail + OpenAI ok = 2)
+    provider_attempts = actual provider API calls (Claude fail + GPT ok = 2)
     fallbacks         = number of provider switches
 
 A lightweight circuit breaker re-probes the primary after `cooldown_seconds`.
@@ -19,7 +32,61 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_ORDER = ("groq", "openai", "anthropic")
+_KNOWN_PROVIDERS = ("groq", "openai", "anthropic")
+
+# Loose sanity checks — not full validation, just enough to catch a pasted
+# placeholder or the wrong key in the wrong slot before it silently falls
+# through to demo mode and leaves you wondering why.
+_KEY_PREFIX = {"openai": "sk-", "anthropic": "sk-ant-", "groq": "gsk_"}
+
+
+def _warn_if_malformed(name: str, key: Optional[str]) -> None:
+    if not key:
+        return
+    prefix = _KEY_PREFIX.get(name)
+    if prefix and not key.startswith(prefix):
+        logger.warning(
+            "%s_API_KEY is set but doesn't look like a valid %s key "
+            "(expected it to start with '%s') — check for a copy-paste mistake",
+            name.upper(), name, prefix)
+
+
+def _resolve_provider_order() -> List[str]:
+    """Build provider priority from which keys are actually set, with GPT and
+    Claude treated as the two primaries and Groq as a trailing extra.
+
+    LLM_PROVIDER behaves as:
+        "demo"               -> pin to demo, exclusively
+        "groq"                -> pin to groq, exclusively (explicit single-provider mode)
+        "openai"/"anthropic" -> PREFERENCE for which of the two leads the chain
+                                 when both keys are present; does not exclude
+                                 the other — it still follows as fallback.
+        "auto" / unset        -> Claude leads if both are present, Groq trails.
+    """
+    forced = settings.llm_provider
+    if forced in ("demo", "groq"):
+        return [forced]
+
+    have_openai = bool(settings.openai_api_key)
+    have_anthropic = bool(settings.anthropic_api_key)
+    have_groq = bool(settings.groq_api_key)
+
+    order: List[str] = []
+    if have_openai and have_anthropic:
+        # both primaries configured — LLM_PROVIDER (if openai/anthropic)
+        # picks which leads; default to Claude as primary otherwise
+        preferred = forced if forced in ("openai", "anthropic") else "anthropic"
+        order.append(preferred)
+        order.append("openai" if preferred == "anthropic" else "anthropic")
+    elif have_anthropic:
+        order.append("anthropic")
+    elif have_openai:
+        order.append("openai")
+
+    if have_groq:
+        order.append("groq")
+
+    return order
 
 
 class LLMError(Exception):
@@ -148,23 +215,29 @@ class LLMClient:
         self._fallback_since: Optional[float] = None
         self.cooldown_seconds = 60
 
-        forced = settings.llm_provider
-        if forced == "demo" or settings.demo_mode:
+        if settings.llm_provider == "demo" or settings.demo_mode:
             self._providers = [("demo", DemoClient())]
             return
 
-        want = [forced] if forced in _PROVIDER_ORDER else list(_PROVIDER_ORDER)
+        want = _resolve_provider_order()
+        _factory = {"groq": _GroqClient, "openai": _OpenAIClient, "anthropic": _AnthropicClient}
+        _key = {"groq": settings.groq_api_key, "openai": settings.openai_api_key,
+                "anthropic": settings.anthropic_api_key}
         for name in want:
-            if name == "groq" and settings.groq_api_key:
-                self._providers.append(("groq", _GroqClient()))
-            elif name == "openai" and settings.openai_api_key:
-                self._providers.append(("openai", _OpenAIClient()))
-            elif name == "anthropic" and settings.anthropic_api_key:
-                self._providers.append(("anthropic", _AnthropicClient()))
+            if name not in _KNOWN_PROVIDERS:
+                continue
+            key = _key[name]
+            if not key:
+                logger.warning("LLM_PROVIDER=%s requested but no matching API key is set", name)
+                continue
+            _warn_if_malformed(name, key)
+            self._providers.append((name, _factory[name]()))
 
         if not self._providers:
             logger.warning("no LLM keys configured — falling back to demo provider")
             self._providers = [("demo", DemoClient())]
+        else:
+            logger.info("LLM provider chain resolved: %s", " -> ".join(n for n, _ in self._providers))
 
     def complete(self, system: str, user: str) -> str:
         self.calls += 1

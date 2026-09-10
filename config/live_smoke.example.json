@@ -1,0 +1,10 @@
+{
+  "company": "YOUR_TARGET",
+  "website": "https://YOUR_TARGET_DOMAIN",
+  "competitors": [
+    {"name": "COMPETITOR_ONE", "website": "https://COMPETITOR_ONE_DOMAIN"},
+    {"name": "COMPETITOR_TWO", "website": "https://COMPETITOR_TWO_DOMAIN"}
+  ],
+  "regions": ["US", "UK", "IN"],
+  "focus_products": []
+}

@@ -96,6 +96,15 @@ class Settings:
     # ---- Storage ----
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/competitor.db")
     vector_store_dir: str = os.getenv("VECTOR_STORE_DIR", "data/vectors")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "1536"))
+
+    # ---- API security / frontend ----
+    api_key: str | None = os.getenv("API_KEY") or None
+    api_key_required: bool = field(default_factory=lambda: _bool_env("API_KEY_REQUIRED", True))
+    cors_origins: List[str] = field(default_factory=lambda: _list_env("CORS_ORIGINS") or ["http://localhost:5173"])
+    research_timeout_seconds: int = int(os.getenv("RESEARCH_TIMEOUT_SECONDS", "1800"))
+    research_rate_limit_per_minute: int = int(os.getenv("RESEARCH_RATE_LIMIT_PER_MINUTE", "5"))
 
     # ---- Output ----
     report_output_dir: str = os.getenv("REPORT_OUTPUT_DIR", "data/reports")

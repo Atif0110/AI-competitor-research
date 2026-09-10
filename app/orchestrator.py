@@ -25,7 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from app.analysis.currency import normalize_price
@@ -69,12 +69,32 @@ class Pipeline:
                  store: Optional[OfferStore] = None,
                  review_store: Optional[ReviewStore] = None,
                  extractor: Optional[StructuredExtractor] = None,
-                 scraper=None):
+                 scraper=None,
+                 progress_callback: Optional[Callable[[dict], None]] = None):
         self.store = store or OfferStore()
         self.review_store = review_store or ReviewStore()
         self.extractor = extractor or StructuredExtractor(LLMClient())
         self.scraper = scraper
+        self.progress_callback = progress_callback
         self.insights = InsightsEngine(self.store, self.review_store, self.extractor.client)
+
+    def _progress(self, event: str, **data) -> None:
+        if not self.progress_callback:
+            return
+        payload = {"event": event, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **data}
+        try:
+            self.progress_callback(payload)
+        except Exception:
+            logger.debug("progress callback failed", exc_info=True)
+
+    def _progress(self, event: str, **data) -> None:
+        if not self.progress_callback:
+            return
+        payload = {"event": event, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **data}
+        try:
+            self.progress_callback(payload)
+        except Exception:
+            logger.debug("progress callback failed", exc_info=True)
 
     # ---- checkpoints (corrupt-safe; keyed by url||region) ----
     def _checkpoint(self, run_id: str) -> set:
@@ -180,8 +200,12 @@ class Pipeline:
         # per-run metric isolation: counters belong to THIS run only (#5)
         self.extractor.client.reset_telemetry()
 
+        self._progress("run_started", run_id=run_id, mode="demo" if demo else "live", target_company=target.company)
+        self._progress("run_started", run_id=run_id, mode="demo" if demo else "live", target_company=target.company)
         urls, discovery_errors = self._discover(target, demo)
         stats.discovered = len(urls)
+        self._progress("discovery_complete", run_id=run_id, urls_discovered=len(urls))
+        self._progress("discovery_complete", run_id=run_id, urls_discovered=len(urls))
         stats.errors.extend(discovery_errors)
         done = self._checkpoint(run_id)
 
@@ -202,10 +226,13 @@ class Pipeline:
                     seen.add(key)
                     items.append((u, r.value))
 
-        for url, region in items:
+        self._progress("region_fanout_ready", run_id=run_id, work_items=len(items))
+        for index, (url, region) in enumerate(items, start=1):
             ck = f"{url}||{region}"
             if ck in done:
                 continue
+            self._progress("scrape_started", run_id=run_id, url=url, region=region, index=index, total=len(items))
+            self._progress("scrape_started", run_id=run_id, url=url, region=region, index=index, total=len(items))
             try:
                 page, log = scraper.fetch(url, region=region)
             except ScrapeError as e:
@@ -216,6 +243,7 @@ class Pipeline:
                     stats.scrapers_used.extend(e.log.scrapers_tried)
                 continue
             stats.pages_scraped += 1
+            self._progress("scrape_succeeded", run_id=run_id, url=url, region=region, pages_scraped=stats.pages_scraped)
             stats.retries_used += _log_retries(log)
             stats.scrapers_used.extend(log.scrapers_tried)
 
@@ -232,6 +260,7 @@ class Pipeline:
                 offer = self._finalize_offer(result.offer, competitor, run_id)
                 self.store.upsert_offer(offer)
                 stats.extractions_ok += 1
+                self._progress("extraction_succeeded", run_id=run_id, url=url, region=region, product=offer.product_name, extraction_confidence=offer.extraction_confidence)
                 reviews, _fallback = self.extractor.extract_reviews(
                     page.markdown, url, expected_region=Region(region),
                     competitor=competitor, run_id=run_id,
@@ -240,6 +269,7 @@ class Pipeline:
                     self.review_store.add(rv)
             else:
                 stats.extractions_failed += 1
+                self._progress("extraction_failed", run_id=run_id, url=url, region=region, error=result.error)
                 stats.errors.append(f"{url} [{region}]: extraction failed — {result.error}")
 
             done.add(ck)
@@ -264,6 +294,8 @@ class Pipeline:
                         f"({attempted} urls, {stats.urls_failed} failed).",
             ))
 
+        self._progress("run_completed", run_id=run_id, pages_scraped=stats.pages_scraped, extractions_ok=stats.extractions_ok, extractions_failed=stats.extractions_failed, duration_s=duration)
+        self._progress("run_completed", run_id=run_id, pages_scraped=stats.pages_scraped, extractions_ok=stats.extractions_ok, extractions_failed=stats.extractions_failed, duration_s=duration)
         logger.info("run %s done: %d pages, %d ok, %d failed in %.1fs (%s mode)",
                     run_id, stats.pages_scraped, stats.extractions_ok,
                     stats.extractions_failed, duration, "demo" if demo else "live")
