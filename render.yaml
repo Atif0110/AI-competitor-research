@@ -6,7 +6,7 @@ services:
     name: ai-competitor-research-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
     startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
