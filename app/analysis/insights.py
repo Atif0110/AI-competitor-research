@@ -413,56 +413,267 @@ class InsightsEngine:
                 ))
         return events
 
+    # ================= cross-run change intelligence =================
+    def cross_run_changes(self, target_company: Optional[str] = None, limit: int = 50) -> List[dict]:
+        """Compare the latest two stored runs for the same target.
+
+        This turns repeated research into explicit competitive change intelligence
+        without mixing observations inside a single run.
+        """
+        runs = self.store.recent_runs(limit=100)
+        if target_company:
+            runs = [r for r in runs if str(r.get("target_company", "")).lower() == target_company.lower()]
+        if len(runs) < 2:
+            return []
+        latest, previous = runs[0], runs[1]
+        current = self._offers(latest["run_id"], limit=20000)
+        prior = self._offers(previous["run_id"], limit=20000)
+
+        def key(o: ProductOffer):
+            return (_gid(o), o.region.value, o.competitor or o.seller or "unknown")
+
+        def best(rows):
+            usable = [o for o in rows if o.availability.value != "out_of_stock"]
+            return min(usable, key=_price_key) if usable else None
+
+        old = defaultdict(list)
+        new = defaultdict(list)
+        for o in prior: old[key(o)].append(o)
+        for o in current: new[key(o)].append(o)
+
+        changes = []
+        for k in sorted(set(old) | set(new)):
+            before, after = best(old.get(k, [])), best(new.get(k, []))
+            if not before and after:
+                changes.append({"kind": "new_observation", "severity": "info", "product_name": _gname(after), "region": after.region.value, "competitor": after.competitor or after.seller, "message": f"{after.competitor or after.seller or 'Competitor'} newly observed {_gname(after)} in {after.region.value}.", "previous_run": previous["run_id"], "latest_run": latest["run_id"]})
+                continue
+            if not before or not after:
+                continue
+            old_price, new_price = _price_key(before), _price_key(after)
+            if old_price <= 0:
+                continue
+            change_pct = round((new_price - old_price) / old_price * 100, 2)
+            if abs(change_pct) < _MIN_PRICE_CHANGE_PCT:
+                continue
+            kind = "price_drop" if change_pct < 0 else "price_increase"
+            severity = "critical" if abs(change_pct) >= 20 else "warn" if abs(change_pct) >= 10 else "info"
+            changes.append({
+                "kind": kind, "severity": severity, "product_name": _gname(after),
+                "region": after.region.value, "competitor": after.competitor or after.seller,
+                "from_price": before.price, "to_price": after.price,
+                "currency": after.currency.value, "change_pct": change_pct,
+                "message": f"{after.competitor or after.seller or 'Competitor'} {('reduced' if change_pct < 0 else 'increased')} {_gname(after)} by {abs(change_pct):.1f}% in {after.region.value}.",
+                "previous_run": previous["run_id"], "latest_run": latest["run_id"],
+            })
+        changes.sort(key=lambda x: (x.get("severity") != "critical", x.get("severity") != "warn", -abs(float(x.get("change_pct", 0)))))
+        return changes[:limit]
+
     # ================= RAG Q&A (honest retrieval, #12) =================
     def answer_question(self, question: str, region: Optional[Region] = None,
                         n: int = 8, run_id: Optional[str] = None) -> dict:
+        """
+        Answer a customer-review question using only relevant retrieved reviews.
+
+        Important:
+        ReviewStore.search() may return the nearest available review even when
+        there is no genuinely relevant evidence. We therefore apply a lightweight
+        lexical relevance guard before allowing a review to become evidence.
+
+        This prevents unrelated reviews from being presented as sources and keeps
+        the RAG layer honest when the corpus cannot answer the question.
+        """
         scope = self._scope(run_id)
-        hits = self.review_store.search(question, n=n,
-                                        region=region.value if region else None,
-                                        run_id=scope)
+
+        hits = self.review_store.search(
+            question,
+            n=n,
+            region=region.value if region else None,
+            run_id=scope,
+        )
+
+        # First guard: no retrieval at all.
         if not hits:
             if not self._reviews(scope):
-                return {"answer": "No reviews stored yet — run research first.", "sources": []}
-            return {"answer": "No relevant reviews were retrieved for this question. "
-                              "Try a broader question or check that reviews exist for this filter.",
-                    "sources": []}
+                return {
+                    "answer": "No reviews stored yet — run research first.",
+                    "sources": [],
+                }
+
+            return {
+                "answer": (
+                    "No relevant reviews were retrieved for this question. "
+                    "Try a broader question or check that reviews exist for this filter."
+                ),
+                "sources": [],
+            }
+
+        # Second guard: ReviewStore may return the nearest available review even
+        # when the query has no meaningful lexical overlap with the review corpus.
+        #
+        # Example:
+        #   Question: "what do customers complain about battery life?"
+        #   Review:   "Sound is superb, comfort excellent"
+        #
+        # The review should NOT become evidence simply because it was the closest
+        # available retrieval result.
+        relevant_hits = self._filter_rag_relevance(question, hits)
+
+        if not relevant_hits:
+            return {
+                "answer": (
+                    "No relevant reviews were found for this question. "
+                    "The available reviews do not contain enough information to answer it."
+                ),
+                "sources": [],
+            }
+
+        hits = relevant_hits
 
         if self._llm_usable():
             try:
-                user = (f"Question: {question}\n\nReviews:\n" + "\n".join(
-                    f"- [{r.region.value}|{r.rating or '?'}/5] {r.review_text} (source: {r.source_url})"
-                    for r in hits))
+                user = (
+                    f"Question: {question}\n\n"
+                    "Reviews:\n"
+                    + "\n".join(
+                        f"- [{r.region.value}|{r.rating or '?'}/5] "
+                        f"{r.review_text} (source: {r.source_url})"
+                        for r in hits
+                    )
+                )
+
                 answer = self.llm.complete(_QA_SYSTEM, user)
+
             except Exception as e:
-                logger.warning("RAG LLM synthesis failed (%s) — fallback", e)
+                logger.warning(
+                    "RAG LLM synthesis failed (%s) — fallback",
+                    e,
+                )
                 answer = self._rag_fallback(question, hits)
         else:
             answer = self._rag_fallback(question, hits)
 
-        sources = [{"product": r.product_name, "region": r.region.value,
-                    "url": r.source_url, "rating": r.rating, "run_id": r.run_id} for r in hits]
-        return {"answer": answer, "sources": sources}
+        sources = [
+            {
+                "product": r.product_name,
+                "region": r.region.value,
+                "url": r.source_url,
+                "rating": r.rating,
+                "run_id": r.run_id,
+            }
+            for r in hits
+        ]
+
+        return {
+            "answer": answer,
+            "sources": sources,
+        }
+
+    @staticmethod
+    def _filter_rag_relevance(
+        question: str,
+        hits: List[Review],
+    ) -> List[Review]:
+        """
+        Filter obviously unrelated reviews before they are used as RAG evidence.
+
+        The retrieval backend is still responsible for semantic retrieval.
+        This method is intentionally a conservative second-stage guard.
+
+        A review is accepted when at least one meaningful query term appears
+        in the review text. Generic stopwords are ignored.
+
+        This is especially important when the corpus is tiny and the vector
+        store returns the closest available document even when its relevance
+        score is effectively zero.
+        """
+        if not hits:
+            return []
+
+        stopwords = {
+            "a", "an", "and", "are", "about", "be", "by", "can", "could",
+            "customer", "customers", "do", "does", "for", "from", "how",
+            "i", "in", "is", "it", "me", "my", "of", "on", "or", "our",
+            "the", "their", "them", "there", "this", "to", "was", "what",
+            "when", "where", "which", "who", "why", "with", "would",
+            "you", "your",
+            "complain", "complains", "complaint", "complaints",
+            "review", "reviews", "customer", "customers",
+        }
+
+        query_terms = {
+            token
+            for token in question.lower().replace("-", " ").split()
+            if token.isalpha() and len(token) >= 3 and token not in stopwords
+        }
+
+        # If the question contains no meaningful terms, do not guess.
+        if not query_terms:
+            return []
+
+        relevant = []
+
+        for review in hits:
+            text = (review.review_text or "").lower()
+
+            # Normalise punctuation so "battery-life" and "battery life"
+            # can still participate in matching.
+            normalised_text = (
+                text.replace("-", " ")
+                    .replace("/", " ")
+                    .replace("_", " ")
+            )
+
+            text_terms = {
+                token
+                for token in normalised_text.split()
+                if token.isalpha()
+            }
+
+            # Direct term overlap.
+            overlap = query_terms.intersection(text_terms)
+
+            if overlap:
+                relevant.append(review)
+                continue
+
+            # Small set of useful domain synonyms. This allows obvious
+            # formulations such as:
+            #
+            #   battery -> charge / charging / drain / drains
+            #   expensive -> costly / price
+            #
+            # without allowing arbitrary unrelated reviews through.
+            synonym_groups = (
+                {"battery", "batteries", "charge", "charging", "drain", "drains"},
+                {"price", "pricing", "expensive", "cost", "costly", "cheap"},
+                {"sound", "audio", "speaker", "speakers", "volume"},
+                {"comfort", "comfortable", "uncomfortable", "fit", "fitting"},
+                {"slow", "slowness", "lag", "laggy", "delay", "delayed"},
+                {"quality", "durability", "durable", "broken", "breaks"},
+                {"delivery", "shipping", "shipment", "delayed"},
+                {"support", "service", "help", "assistance"},
+            )
+
+            matched_group = False
+
+            for group in synonym_groups:
+                if query_terms.intersection(group) and text_terms.intersection(group):
+                    matched_group = True
+                    break
+
+            if matched_group:
+                relevant.append(review)
+
+        return relevant
 
     def _rag_fallback(self, question: str, hits: List[Review]) -> str:
-        lines = [f"- ({r.region.value}) {r.review_text}" for r in hits[:5]]
-        return ("Top reviews related to your question (keyword retrieval; configure LLM keys "
-                "for synthesized answers):\n" + "\n".join(lines))
+        lines = [
+            f"- ({r.region.value}) {r.review_text}"
+            for r in hits[:5]
+        ]
 
-
-def _strip_json(raw: str) -> str:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return raw.strip()
-
-
-def _recommendation(span) -> str:
-    if not span:
-        return "Collect more data before recommending a price."
-    low, high = span
-    if high / low > 1.15:
-        return (f"Price gap is large ({low:.2f}–{high:.2f}): investigate whether the low seller "
-                "is bundle-only, refurb, or a stock-out bait.")
-    return "Prices are within a healthy band; differentiate on positioning and reviews."
+        return (
+            "Top reviews related to your question "
+            "(keyword retrieval; configure LLM keys for synthesized answers):\n"
+            + "\n".join(lines)
+        )

@@ -103,7 +103,7 @@ class _GroqClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from groq import Groq
 
-        client = Groq(api_key=settings.groq_api_key)
+        client = Groq(api_key=settings.groq_api_key, base_url=settings.groq_base_url)
         resp = client.chat.completions.create(
             model=settings.groq_model,
             messages=[{"role": m.role, "content": m.content} for m in messages],
@@ -116,20 +116,30 @@ class _OpenAIClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from openai import OpenAI
 
-        client = OpenAI(api_key=settings.openai_api_key)
-        resp = client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            temperature=0,
-        )
-        return resp.choices[0].message.content or ""
+        client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+        payload = [{"role": m.role, "content": m.content} for m in messages]
+        try:
+            # Responses is the current OpenAI API surface.
+            resp = client.responses.create(
+                model=settings.openai_model,
+                input=payload,
+            )
+            return getattr(resp, "output_text", "") or ""
+        except Exception:
+            # Keep compatibility with OpenAI-compatible deployments/models.
+            resp = client.chat.completions.create(
+                model=settings.openai_model,
+                messages=payload,
+                temperature=0,
+            )
+            return resp.choices[0].message.content or ""
 
 
 class _AnthropicClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key, base_url=settings.anthropic_base_url)
         system = "\n".join(m.content for m in messages if m.role == "system")
         user = "\n".join(m.content for m in messages if m.role != "system")
         resp = client.messages.create(

@@ -134,6 +134,11 @@ def create_app():
             "auth_required": bool(settings.api_key_required),
             "active_llm_provider": client.provider_name,
             "llm_provider_chain": [n for n, _ in client._providers],
+            "llm_models": {
+                "openai": settings.openai_model if settings.openai_api_key else None,
+                "anthropic": settings.anthropic_model if settings.anthropic_api_key else None,
+                "groq": settings.groq_model if settings.groq_api_key else None,
+            },
         }
 
     @app.post("/research", response_model=PipelineResult, dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
@@ -222,6 +227,10 @@ def create_app():
     @app.get("/insights/events")
     def events(run_id: str | None = None):
         return [e.model_dump(mode="json") for e in _insights.detect_events(run_id or "")]
+
+    @app.get("/insights/changes")
+    def changes(target_company: str | None = None, limit: int = 50):
+        return _insights.cross_run_changes(target_company=target_company, limit=max(1, min(limit, 200)))
 
     @app.post("/insights/reviews/query", dependencies=[Depends(_require_api_key)])
     def reviews_query(body: ReviewQueryRequest):
