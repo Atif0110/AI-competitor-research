@@ -1,13 +1,13 @@
 # Render blueprint. The free web service is suitable for demo presentation.
 # For production persistence, use PostgreSQL and a persistent object/file store
 # for reports/evidence/checkpoints, or deploy with the included Docker Compose.
+
 services:
   - type: web
     name: ai-competitor-research-api
-    runtime: python
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
-    buildCommand: pip install -r requirements.txt && playwright install chromium
-    startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
