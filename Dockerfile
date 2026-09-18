@@ -3,9 +3,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Playwright browser is optional (used only as a fallback scraper layer).
-# Build with:  docker build --build-arg WITH_PLAYWRIGHT=true .
-ARG WITH_PLAYWRIGHT=false
+# Install Playwright and Chromium for the fallback scraper layer.
+ARG WITH_PLAYWRIGHT=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -22,4 +21,5 @@ RUN if [ "$WITH_PLAYWRIGHT" = "true" ]; then \
 COPY . .
 
 EXPOSE 8000
+
 CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
