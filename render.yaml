@@ -1,7 +1,3 @@
-# Render blueprint. The free web service is suitable for demo presentation.
-# For production persistence, use PostgreSQL and a persistent object/file store
-# for reports/evidence/checkpoints, or deploy with the included Docker Compose.
-
 services:
   - type: web
     name: ai-competitor-research-api
