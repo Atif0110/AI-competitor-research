@@ -37,7 +37,6 @@ class PlaywrightScraper(BaseScraper):
             # Playwright's separate chromium-headless-shell executable.
             browser = p.chromium.launch(
                 headless=True,
-                channel="chromium",
                 **kwargs,
             )
 
