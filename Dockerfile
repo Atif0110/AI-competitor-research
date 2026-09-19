@@ -8,6 +8,9 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Explicitly install Chromium for the Playwright runtime.
+RUN python -m playwright install chromium
+
 COPY . .
 
 EXPOSE 8000
