@@ -347,7 +347,7 @@ a {
 
 .sidebar nav button:hover {
   color: #eceef2;
-  background: rgba(255,255,255,.032);
+  background: rgba(255,255,255,.024);
 }
 
 .sidebar nav button.active {
@@ -673,7 +673,7 @@ a {
 }
 
 .hero-copy {
-  max-width: 700px;
+  max-width: 660px;
   position: relative;
   z-index: 2;
 }
@@ -697,6 +697,7 @@ a {
 }
 
 .hero-copy h2 {
+  max-width: 650px;
   margin: 17px 0 14px;
   font-size: clamp(35px, 4vw, 51px);
   line-height: 1.01;
@@ -768,13 +769,13 @@ a {
 }
 
 .ring-one {
-  width: 210px;
-  height: 210px;
+  width: 190px;
+  height: 190px;
 }
 
 .ring-two {
-  width: 145px;
-  height: 145px;
+  width: 130px;
+  height: 130px;
   border-color: rgba(194,138,169,.14);
   animation-duration: 15s;
   animation-direction: reverse;
@@ -824,19 +825,20 @@ a {
 
 .n1 { top: 12px; right: 43px; }
 .n2 { bottom: 23px; left: 28px; animation-delay: 1s; }
-.n3 { top: 89px; right: 0; color: var(--accent); animation-delay: 2s; }
+.n3 { display: none; }
 
 .hero-visual {
   position: absolute;
   inset: 0;
+  transform: translateX(28px);
   pointer-events: none;
 }
 
 .hero-glow {
-  width: 340px;
-  height: 340px;
+  width: 310px;
+  height: 310px;
   position: absolute;
-  right: 8%;
+  right: 5%;
   top: 2%;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(215,154,91,.085), transparent 68%);
@@ -844,6 +846,8 @@ a {
 }
 
 .signal-float {
+  right: 1%;
+  top: 28px;
   position: absolute;
   padding: 8px 10px;
   border: 1px solid rgba(255,255,255,.08);
@@ -859,6 +863,69 @@ a {
 .signal-float.one { top: 30px; right: 2%; }
 .signal-float.two { right: 19%; bottom: 78px; animation-delay: 1.5s; }
 .signal-float.three { top: 174px; right: 0; animation-delay: .7s; }
+
+/* ─────────────────────────────────────────────
+   RESEARCH PIPELINE
+───────────────────────────────────────────── */
+.research-pipeline {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+  align-items: center;
+  gap: 0;
+  margin: 18px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.018);
+}
+.research-stage {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #666e7a;
+  font: 9px "DM Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  transition: color .25s ease, opacity .25s ease;
+}
+.research-stage.done,
+.research-stage.observed { color: #bca58e; }
+.research-stage.active { color: #f0c18c; }
+.stage-dot {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 50%;
+  color: #6d7480;
+  background: #0c0e12;
+  font-size: 8px;
+}
+.research-stage.done .stage-dot,
+.research-stage.active .stage-dot {
+  border-color: rgba(215,154,91,.34);
+  color: var(--accent);
+}
+.research-stage.active .stage-dot {
+  box-shadow: 0 0 0 4px rgba(215,154,91,.06), 0 0 20px rgba(215,154,91,.12);
+  animation: researchPulse 1.6s ease-in-out infinite;
+}
+.stage-connector {
+  height: 1px;
+  margin: 0 8px;
+  background: rgba(255,255,255,.07);
+  transition: background .3s ease;
+}
+.stage-connector.done {
+  background: rgba(215,154,91,.38);
+}
+.research-pipeline.completed .research-stage.done .stage-dot {
+  background: rgba(215,154,91,.08);
+}
 
 /* ─────────────────────────────────────────────
    METRICS / SURFACES
@@ -2572,6 +2639,8 @@ a {
 ───────────────────────────────────────────── */
 
 @media (max-width: 1100px) {
+  .hero-visual { transform: translateX(0); }
+
   .sidebar {
     width: 220px;
   }
@@ -2615,6 +2684,14 @@ a {
 }
 
 @media (max-width: 760px) {
+  .research-pipeline {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px 6px;
+  }
+  .stage-connector { display: none; }
+  .research-stage { justify-content: flex-start; }
+  .hero-visual { transform: translateX(0); opacity: .34; }
+
   .sidebar {
     width: 260px;
     transform: translateX(-100%);
