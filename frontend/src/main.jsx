@@ -70,7 +70,7 @@ function App() {
     return () => clearTimeout(id);
   }, []);
 
-  const loadHealth = () => api('/health').then(setHealth).catch(e => setToast(e.message));
+  const loadHealth = () => api('/health').then(setHealth).catch(e => { setHealth({ status: 'error', mode: 'unknown', error: e.message }); setToast(e.message); });
   useEffect(() => { loadHealth(); }, [refresh]);
   useEffect(() => {
     if (!job || ['completed', 'failed'].includes(job.status)) return;
@@ -106,11 +106,11 @@ function App() {
       <div className="sidebar-spacer"/>
       <div className="provider-card">
         <div className="provider-head"><span className="mini-orb"/><span>AI routing</span><span className="online-dot"/></div>
-        <strong>{health?.active_llm_provider || 'demo'}</strong>
-        <small>{health?.llm_provider_chain?.length ? health.llm_provider_chain.join(' → ') : 'No provider keys configured'}</small>
+        <strong>{health?.active_llm_provider || (health?.status === 'error' ? 'Connect API' : 'Checking…')}</strong>
+        <small>{health?.llm_provider_chain?.length ? health.llm_provider_chain.join(' → ') : health?.status === 'error' ? 'Add your app API key below' : 'Loading provider status…'}</small>
       </div>
       <div className="sidebar-footer">
-        <div className="status-line"><span className={health?.status === 'ok' ? 'status-dot live' : 'status-dot'}/><span>API {health?.status === 'ok' ? 'online' : 'offline'}</span><span className="footer-mode">{health?.mode || 'unknown'}</span></div>
+        <div className="status-line"><span className={health?.status === 'ok' ? 'status-dot live' : 'status-dot'}/><span>API {health?.status === 'ok' ? 'online' : health?.status === 'error' ? 'check access' : 'checking'}</span><span className="footer-mode">{health?.status === 'ok' ? (health.mode || 'unknown') : '—'}</span></div>
         <button className="settings-link" onClick={() => { const k = prompt('Enter the app API key (not your LLM provider key):', apiKey); if (k !== null) { setApiKey(k.trim()); localStorage.setItem('acr_api_key', k.trim()); setRefresh(x => x + 1); } }}><Icon name="settings" size={16}/> API access</button>
       </div>
     </aside>
@@ -118,7 +118,7 @@ function App() {
     <main className="main">
       <header className="topbar">
         <div className="top-left"><button className="menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu"/></button><div><div className="crumb"><span>INTELLIGENCE</span><b>/</b><span>{title.toUpperCase()}</span></div><h1>{title}</h1></div></div>
-        <div className="top-actions"><div className="connection-pill"><span className={health?.status === 'ok' ? 'status-dot live' : 'status-dot'}/>{health?.active_llm_provider || 'demo'}<span className="divider"/> {health?.mode || 'unknown'}</div><button className="primary top-new" onClick={() => setPage('run')}><Icon name="plus" size={16}/> New research</button></div>
+        <div className="top-actions"><div className={`connection-pill ${health?.status === 'error' ? 'needs-access' : ''}`}><span className={health?.status === 'ok' ? 'status-dot live' : 'status-dot'}/>{health?.active_llm_provider || (health?.status === 'error' ? 'connect API' : 'checking')}<span className="divider"/> {health?.status === 'ok' ? (health.mode || 'unknown') : '—'}</div><button className="primary top-new" onClick={() => setPage('run')}><Icon name="plus" size={16}/> New research</button></div>
       </header>
       <div className="page-wrap">
         {page === 'dashboard' && <Dashboard setPage={setPage} runId={runId} refresh={refresh} health={health}/>}
@@ -157,9 +157,9 @@ function Dashboard({ setPage, runId, refresh, health }) {
   return <div className="page-stack">
     <section className="hero-panel reveal">
       <div className="hero-grid"/>
-      <div className="hero-copy"><div className="eyebrow accent"><span className="spark-dot"/> COMPETITIVE INTELLIGENCE</div><h2>{latest?.target_company ? <>Signals for <span>{latest.target_company}</span></> : <>Know what your competitors are.<br/><span>Doing before everyone else.</span></>}</h2><p>{latest ? `Latest research run ${latest.run_id} completed in ${avgRuntime}. Explore evidence, pricing moves and market signals from the same run.` : 'Discover products, regional pricing and customer signals, then turn them into traceable intelligence with evidence attached to every observation.'}</p><div className="hero-actions"><button className="primary" onClick={() => setPage('run')}><Icon name="scan" size={16}/> Start research</button><button className="secondary" onClick={() => setPage('insights')}><Icon name="spark" size={16}/> View signals</button></div></div>
-      <div className="hero-visual"><div className="hero-glow"/><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="orbit-core"><span>ACR</span><small>INTELLIGENCE</small></div><div className="orbit-node n1">$</div><div className="orbit-node n2">◎</div><div className="orbit-node n3">✦</div><div className="signal-float"><span className="signal-pulse"/> New market signal <b>detected</b></div></div>
-      <div className="hero-foot"><span><b>Evidence first</b> Every run retains source context and timestamps.</span><span className="hero-foot-right"><span className="status-dot live"/> {health?.mode === 'live' ? 'Live provider' : 'Deterministic demo'} mode</span></div>
+      <div className="hero-copy"><div className="eyebrow accent"><span className="spark-dot"/> COMPETITIVE INTELLIGENCE</div><h2>{latest?.target_company ? <>Signals for <span>{latest.target_company}</span></> : <>Know what your competitors are<br/><span>doing before everyone else.</span></>}</h2><p>{latest ? `Latest research run ${latest.run_id} completed in ${avgRuntime}. Explore evidence, pricing moves and market signals from the same run.` : 'Discover products, regional pricing and customer signals, then turn them into traceable intelligence with evidence attached to every observation.'}</p><div className="hero-actions"><button className="primary" onClick={() => setPage('run')}><Icon name="scan" size={16}/> Start research</button><button className="secondary" onClick={() => setPage('insights')}><Icon name="spark" size={16}/> View signals</button></div></div>
+      <div className="hero-visual"><div className="hero-glow"/><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="orbit-core"><span>ACR</span><small>INTELLIGENCE</small></div><div className="orbit-node n2">◎</div><div className="signal-float"><span className="signal-pulse"/> New market signal <b>detected</b></div></div>
+      <div className="hero-foot"><span><b>Evidence first</b> Every run retains source context and timestamps.</span><span className="hero-foot-right"><span className={health?.status === 'ok' ? 'status-dot live' : 'status-dot'}/> {health?.status === 'ok' ? (health.mode === 'live' ? 'Live provider' : 'Deterministic demo') : 'Connect API for live status'}</span></div>
     </section>
 
     <div className="metric-grid reveal delay-1">
