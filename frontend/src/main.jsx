@@ -29,6 +29,7 @@ async function api(path, options = {}) {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if (res.status === 401) throw new Error('Workspace API key required. Open “Workspace API key” and enter the API_KEY configured on Render — not your GROQ_API_KEY.');
   if (!res.ok) throw new Error(data?.detail || `Request failed (${res.status})`);
   return data;
 }
@@ -116,7 +117,7 @@ function App() {
       </div>
       <div className="sidebar-footer">
         <div className="status-line"><span className={health?.status === 'ok' ? 'status-dot live' : 'status-dot'}/><span>API {health?.status === 'ok' ? 'online' : health?.status === 'error' ? 'check access' : 'checking'}</span><span className="footer-mode">{health?.status === 'ok' ? (health.mode || 'unknown') : '—'}</span></div>
-        <button className="settings-link" onClick={() => { const k = prompt('Enter the app API key (not your LLM provider key):', apiKey); if (k !== null) { setApiKey(k.trim()); localStorage.setItem('acr_api_key', k.trim()); setRefresh(x => x + 1); } }}><Icon name="settings" size={16}/> API access</button>
+        <button className="settings-link" onClick={() => { const k = prompt('Enter the workspace API_KEY configured on Render. Do not enter your GROQ_API_KEY here.', apiKey); if (k !== null) { setApiKey(k.trim()); localStorage.setItem('acr_api_key', k.trim()); setRefresh(x => x + 1); } }}><Icon name="settings" size={16}/> Workspace API key</button>
       </div>
     </aside>
     {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} aria-label="Close navigation"/>}
