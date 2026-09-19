@@ -1,26 +1,14 @@
-"""Provider-agnostic chat client with a real cross-provider fallback chain
-and circuit breaker.
+"""Provider-agnostic LLM client with explicit provider selection and fallback.
 
-Provider selection (v5 — auto-switch on whichever key is present):
-    - ANTHROPIC_API_KEY only  -> Claude is primary
-    - OPENAI_API_KEY only     -> GPT is primary
-    - both set                -> LLM_PROVIDER decides primary ("openai" or
-                                  "anthropic"); defaults to Claude if unset.
-                                  Whichever of the two is NOT primary becomes
-                                  the automatic fallback.
-    - GROQ_API_KEY            -> always appended to the END of the chain as an
-                                  optional fast/cheap extra fallback, never
-                                  forced ahead of GPT/Claude.
-    - LLM_PROVIDER can also be forced to a single provider name ("groq",
-      "openai", "anthropic", "demo") to pin the chain to exactly that one.
-    - no keys at all          -> demo provider (unchanged).
+Production behavior:
+- Provider credentials are read only from app.config/settings.
+- Demo mode is explicit via DEMO_MODE=true.
+- Missing provider credentials never silently switch a production deployment
+  into demo mode.
+- Gemini, Groq, OpenAI and Anthropic are supported.
+- LLM_PROVIDER can pin a single provider or use "auto" for a configured chain.
 
-Telemetry separates API attempts from logical requests:
-    llm_calls         = logical requests (1 per complete())
-    provider_attempts = actual provider API calls (Claude fail + GPT ok = 2)
-    fallbacks         = number of provider switches
-
-A lightweight circuit breaker re-probes the primary after `cooldown_seconds`.
+Telemetry separates logical LLM requests from provider API attempts.
 """
 from __future__ import annotations
 
@@ -32,65 +20,63 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_PROVIDERS = ("groq", "openai", "anthropic")
+_KNOWN_PROVIDERS = ("gemini", "groq", "openai", "anthropic")
 
-# Loose sanity checks — not full validation, just enough to catch a pasted
-# placeholder or the wrong key in the wrong slot before it silently falls
-# through to demo mode and leaves you wondering why.
-_KEY_PREFIX = {"openai": "sk-", "anthropic": "sk-ant-", "groq": "gsk_"}
+_KEY_PREFIX = {
+    "openai": "sk-",
+    "anthropic": "sk-ant-",
+    "groq": "gsk_",
+}
 
 
 def _warn_if_malformed(name: str, key: Optional[str]) -> None:
+    """Log a warning for obviously malformed known key formats."""
     if not key:
         return
+
     prefix = _KEY_PREFIX.get(name)
     if prefix and not key.startswith(prefix):
         logger.warning(
-            "%s_API_KEY is set but doesn't look like a valid %s key "
-            "(expected it to start with '%s') — check for a copy-paste mistake",
-            name.upper(), name, prefix)
+            "%s_API_KEY is set but does not look like a valid %s key "
+            "(expected it to start with '%s')",
+            name.upper(),
+            name,
+            prefix,
+        )
 
 
 def _resolve_provider_order() -> List[str]:
-    """Build provider priority from which keys are actually set, with GPT and
-    Claude treated as the two primaries and Groq as a trailing extra.
+    """Resolve the provider chain from explicit configuration and credentials.
 
-    LLM_PROVIDER behaves as:
-        "demo"               -> pin to demo, exclusively
-        "groq"                -> pin to groq, exclusively (explicit single-provider mode)
-        "openai"/"anthropic" -> PREFERENCE for which of the two leads the chain
-                                 when both keys are present; does not exclude
-                                 the other — it still follows as fallback.
-        "auto" / unset        -> Claude leads if both are present, Groq trails.
+    Explicit providers pin the chain to that provider only:
+        gemini, groq, openai, anthropic, demo
+
+    In auto mode, Gemini is preferred when configured, followed by Groq,
+    OpenAI, and Anthropic. Only providers with credentials are included.
     """
     forced = settings.llm_provider
-    if forced in ("demo", "groq"):
+
+    if forced == "demo":
+        return ["demo"]
+
+    if forced in _KNOWN_PROVIDERS:
         return [forced]
 
-    have_openai = bool(settings.openai_api_key)
-    have_anthropic = bool(settings.anthropic_api_key)
-    have_groq = bool(settings.groq_api_key)
+    # "auto" is deterministic: prefer Gemini, then Groq, then OpenAI,
+    # then Anthropic. This can be changed later without touching provider
+    # implementation code.
+    configured = {
+        "gemini": bool(settings.gemini_api_key),
+        "groq": bool(settings.groq_api_key),
+        "openai": bool(settings.openai_api_key),
+        "anthropic": bool(settings.anthropic_api_key),
+    }
 
-    order: List[str] = []
-    if have_openai and have_anthropic:
-        # both primaries configured — LLM_PROVIDER (if openai/anthropic)
-        # picks which leads; default to Claude as primary otherwise
-        preferred = forced if forced in ("openai", "anthropic") else "anthropic"
-        order.append(preferred)
-        order.append("openai" if preferred == "anthropic" else "anthropic")
-    elif have_anthropic:
-        order.append("anthropic")
-    elif have_openai:
-        order.append("openai")
-
-    if have_groq:
-        order.append("groq")
-
-    return order
+    return [name for name in ("gemini", "groq", "openai", "anthropic") if configured[name]]
 
 
 class LLMError(Exception):
-    pass
+    """Raised when no configured LLM provider can complete a request."""
 
 
 class ChatMessage:
@@ -99,182 +85,399 @@ class ChatMessage:
         self.content = content
 
 
+class _GeminiClient:
+    """Google Gemini client using the official google-genai SDK."""
+
+    def complete(self, messages: List[ChatMessage]) -> str:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=settings.gemini_api_key)
+
+        system_parts = [
+            message.content
+            for message in messages
+            if message.role == "system"
+        ]
+        user_parts = [
+            message.content
+            for message in messages
+            if message.role != "system"
+        ]
+
+        response = client.models.generate_content(
+            model=settings.gemini_model,
+            contents="\n".join(user_parts),
+            config=types.GenerateContentConfig(
+                system_instruction="\n".join(system_parts) or None,
+                temperature=0,
+            ),
+        )
+
+        return getattr(response, "text", "") or ""
+
+
 class _GroqClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from groq import Groq
 
-        client = Groq(api_key=settings.groq_api_key, base_url=settings.groq_base_url)
-        resp = client.chat.completions.create(
+        client = Groq(
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+        )
+
+        response = client.chat.completions.create(
             model=settings.groq_model,
-            messages=[{"role": m.role, "content": m.content} for m in messages],
+            messages=[
+                {"role": message.role, "content": message.content}
+                for message in messages
+            ],
             temperature=0,
         )
-        return resp.choices[0].message.content or ""
+
+        return response.choices[0].message.content or ""
 
 
 class _OpenAIClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from openai import OpenAI
 
-        client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
-        payload = [{"role": m.role, "content": m.content} for m in messages]
+        client = OpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        )
+
+        payload = [
+            {"role": message.role, "content": message.content}
+            for message in messages
+        ]
+
         try:
-            # Responses is the current OpenAI API surface.
-            resp = client.responses.create(
+            response = client.responses.create(
                 model=settings.openai_model,
                 input=payload,
             )
-            return getattr(resp, "output_text", "") or ""
+            return getattr(response, "output_text", "") or ""
         except Exception:
-            # Keep compatibility with OpenAI-compatible deployments/models.
-            resp = client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=settings.openai_model,
                 messages=payload,
                 temperature=0,
             )
-            return resp.choices[0].message.content or ""
+            return response.choices[0].message.content or ""
 
 
 class _AnthropicClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key, base_url=settings.anthropic_base_url)
-        system = "\n".join(m.content for m in messages if m.role == "system")
-        user = "\n".join(m.content for m in messages if m.role != "system")
-        resp = client.messages.create(
+        client = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key,
+            base_url=settings.anthropic_base_url,
+        )
+
+        system = "\n".join(
+            message.content
+            for message in messages
+            if message.role == "system"
+        )
+
+        user = "\n".join(
+            message.content
+            for message in messages
+            if message.role != "system"
+        )
+
+        response = client.messages.create(
             model=settings.anthropic_model,
             max_tokens=2048,
             system=system or None,
             messages=[{"role": "user", "content": user}],
         )
-        return "".join(block.text for block in resp.content if block.type == "text")
+
+        return "".join(
+            block.text
+            for block in response.content
+            if block.type == "text"
+        )
 
 
 class DemoClient:
-    """Deterministic offline provider."""
+    """Deterministic offline provider for explicit demo/test mode only."""
 
     def complete(self, messages: List[ChatMessage]) -> str:
         import json
         import re
 
-        user = "\n".join(m.content for m in messages if m.role == "user")
-        system = "\n".join(m.content for m in messages if m.role == "system")
+        user = "\n".join(
+            message.content
+            for message in messages
+            if message.role == "user"
+        )
+
+        system = "\n".join(
+            message.content
+            for message in messages
+            if message.role == "system"
+        )
+
         low_sys = system.lower()
 
-        if "review_text" in low_sys or ("reviews" in low_sys and "rating" in low_sys):
-            lines = [m.group(1).strip() for m in re.finditer(r"^Review:\s*(.+)$", user, re.M | re.I)]
-            return json.dumps({"reviews": [
-                {"review_text": t, "rating": None, "review_date": None, "reviewer": None}
-                for t in lines]}, ensure_ascii=False)
+        if "review_text" in low_sys or (
+            "reviews" in low_sys and "rating" in low_sys
+        ):
+            lines = [
+                match.group(1).strip()
+                for match in re.finditer(
+                    r"^Review:\s*(.+)$",
+                    user,
+                    re.M | re.I,
+                )
+            ]
+
+            return json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "review_text": text,
+                            "rating": None,
+                            "review_date": None,
+                            "reviewer": None,
+                        }
+                        for text in lines
+                    ]
+                },
+                ensure_ascii=False,
+            )
 
         if "sentiment" in low_sys and "topics" in low_sys:
-            return json.dumps({
-                "sentiment": "neutral",
-                "topics": {"battery": 5, "comfort": 4, "charging": 3, "price": 3, "support": 2},
-                "complaints": ["Charging case is bulky and the cable is too short.",
-                               "Customer support took three days to reply."],
-                "praise": ["Battery life is amazing.",
-                           "Sound quality is superb, noise cancellation works great."],
-                "feature_severities": [{"feature": "charging", "severity": 3}],
-            })
+            return json.dumps(
+                {
+                    "sentiment": "neutral",
+                    "topics": {
+                        "battery": 5,
+                        "comfort": 4,
+                        "charging": 3,
+                        "price": 3,
+                        "support": 2,
+                    },
+                    "complaints": [
+                        "Charging case is bulky and the cable is too short.",
+                        "Customer support took three days to reply.",
+                    ],
+                    "praise": [
+                        "Battery life is amazing.",
+                        "Sound quality is superb, noise cancellation works great.",
+                    ],
+                    "feature_severities": [
+                        {"feature": "charging", "severity": 3}
+                    ],
+                },
+                ensure_ascii=False,
+            )
 
         def grab(label: str) -> str:
-            m = re.search(rf"^{label}:\s*(.+)$", user, re.M | re.I)
-            return m.group(1).strip() if m else ""
+            match = re.search(
+                rf"^{label}:\s*(.+)$",
+                user,
+                re.M | re.I,
+            )
+            return match.group(1).strip() if match else ""
 
         price = grab("Price") or "0"
+
         try:
             price_f = round(float(price), 2)
         except ValueError:
             price_f = 0.0
+
         product = grab("Product")
+
         if not product:
-            m = re.search(r"^#\s+(.+)$", user, re.M)
-            product = m.group(1).strip() if m else "Unknown Product"
-        um = re.search(r"^Page URL:\s*(.+)$", user, re.M)
-        url = um.group(1).strip() if um else "demo://unknown"
-        return json.dumps({
-            "product_name": product,
-            "brand": grab("Brand") or None,
-            "price": price_f,
-            "currency": grab("Currency") or "USD",
-            "region": grab("Region") or "US",
-            "availability": _norm_avail(grab("Availability")),
-            "seller": grab("Seller") or None,
-            "listing_title": None,
-            "url": url,
-        }, ensure_ascii=False)
+            match = re.search(r"^#\s+(.+)$", user, re.M)
+            product = (
+                match.group(1).strip()
+                if match
+                else "Unknown Product"
+            )
+
+        url_match = re.search(
+            r"^Page URL:\s*(.+)$",
+            user,
+            re.M,
+        )
+
+        url = (
+            url_match.group(1).strip()
+            if url_match
+            else "demo://unknown"
+        )
+
+        return json.dumps(
+            {
+                "product_name": product,
+                "brand": grab("Brand") or None,
+                "price": price_f,
+                "currency": grab("Currency") or "USD",
+                "region": grab("Region") or "US",
+                "availability": _norm_avail(
+                    grab("Availability")
+                ),
+                "seller": grab("Seller") or None,
+                "listing_title": None,
+                "url": url,
+            },
+            ensure_ascii=False,
+        )
 
 
 def _norm_avail(value: str) -> str:
-    v = value.strip().lower()
-    return v if v in {"in_stock", "out_of_stock", "preorder", "unknown"} else "unknown"
+    value = value.strip().lower()
+
+    return (
+        value
+        if value in {
+            "in_stock",
+            "out_of_stock",
+            "preorder",
+            "unknown",
+        }
+        else "unknown"
+    )
 
 
 class LLMClient:
-    """Facade with real fallback chain + per-request/attempt telemetry."""
+    """LLM facade with explicit provider selection and safe fallback."""
 
     def __init__(self) -> None:
         self._providers: List[tuple[str, object]] = []
         self._current = 0
-        self.calls = 0            # logical requests
-        self.provider_attempts = 0  # actual provider API calls
+
+        self.calls = 0
+        self.provider_attempts = 0
         self.fallbacks: List[tuple[str, str]] = []
         self.last_error: Optional[str] = None
+
         self._fallback_since: Optional[float] = None
         self.cooldown_seconds = 60
 
-        if settings.llm_provider == "demo" or settings.demo_mode:
+        if settings.demo_mode:
             self._providers = [("demo", DemoClient())]
+            logger.warning(
+                "DEMO_MODE=true — using deterministic demo LLM provider"
+            )
             return
 
-        want = _resolve_provider_order()
-        _factory = {"groq": _GroqClient, "openai": _OpenAIClient, "anthropic": _AnthropicClient}
-        _key = {"groq": settings.groq_api_key, "openai": settings.openai_api_key,
-                "anthropic": settings.anthropic_api_key}
-        for name in want:
+        provider_order = _resolve_provider_order()
+
+        factories = {
+            "gemini": _GeminiClient,
+            "groq": _GroqClient,
+            "openai": _OpenAIClient,
+            "anthropic": _AnthropicClient,
+        }
+
+        keys = {
+            "gemini": settings.gemini_api_key,
+            "groq": settings.groq_api_key,
+            "openai": settings.openai_api_key,
+            "anthropic": settings.anthropic_api_key,
+        }
+
+        for name in provider_order:
             if name not in _KNOWN_PROVIDERS:
                 continue
-            key = _key[name]
+
+            key = keys[name]
+
             if not key:
-                logger.warning("LLM_PROVIDER=%s requested but no matching API key is set", name)
+                logger.warning(
+                    "LLM provider '%s' selected but its API key is missing",
+                    name,
+                )
                 continue
+
             _warn_if_malformed(name, key)
-            self._providers.append((name, _factory[name]()))
+            self._providers.append((name, factories[name]()))
 
         if not self._providers:
-            logger.warning("no LLM keys configured — falling back to demo provider")
-            self._providers = [("demo", DemoClient())]
-        else:
-            logger.info("LLM provider chain resolved: %s", " -> ".join(n for n, _ in self._providers))
+            raise LLMError(
+                "No LLM provider is configured. Set LLM_PROVIDER and its "
+                "corresponding API key, or explicitly set DEMO_MODE=true "
+                "for offline/demo use."
+            )
+
+        logger.info(
+            "LLM provider chain resolved: %s",
+            " -> ".join(name for name, _ in self._providers),
+        )
 
     def complete(self, system: str, user: str) -> str:
+        if not self._providers:
+            raise LLMError("No LLM provider is configured")
+
         self.calls += 1
+
         last_error: Optional[Exception] = None
-        # circuit breaker: re-probe primary after cooldown
-        if (self._current != 0 and self._fallback_since is not None
-                and (time.monotonic() - self._fallback_since) > self.cooldown_seconds):
+
+        if (
+            self._current != 0
+            and self._fallback_since is not None
+            and (
+                time.monotonic() - self._fallback_since
+                > self.cooldown_seconds
+            )
+        ):
             self._current = 0
-        prev = self._providers[self._current][0]
-        for i in range(len(self._providers)):
-            idx = (self._current + i) % len(self._providers)
-            name, client = self._providers[idx]
+
+        previous_provider = self._providers[self._current][0]
+
+        for offset in range(len(self._providers)):
+            index = (self._current + offset) % len(self._providers)
+            name, client = self._providers[index]
+
             self.provider_attempts += 1
+
             try:
-                out = client.complete([ChatMessage("system", system), ChatMessage("user", user)])
-                if name != prev:
-                    self.fallbacks.append((prev, name))
+                output = client.complete(
+                    [
+                        ChatMessage("system", system),
+                        ChatMessage("user", user),
+                    ]
+                )
+
+                if not output.strip():
+                    raise LLMError(
+                        f"provider '{name}' returned an empty response"
+                    )
+
+                if name != previous_provider:
+                    self.fallbacks.append(
+                        (previous_provider, name)
+                    )
                     self._fallback_since = time.monotonic()
-                if idx == 0:
+
+                if index == 0:
                     self._fallback_since = None
-                self._current = idx
-                return out
-            except Exception as e:
-                last_error = e
-                self.last_error = str(e)
-                logger.warning("provider '%s' failed: %s — trying next", name, e)
-        raise LLMError(f"all LLM providers failed: {last_error}")
+
+                self._current = index
+                self.last_error = None
+
+                return output
+
+            except Exception as exc:
+                last_error = exc
+                self.last_error = str(exc)
+
+                logger.warning(
+                    "provider '%s' failed: %s — trying next configured provider",
+                    name,
+                    exc,
+                )
+
+        raise LLMError(
+            f"All configured LLM providers failed: {last_error}"
+        )
 
     @property
     def provider_name(self) -> str:
@@ -284,12 +487,21 @@ class LLMClient:
         return {
             "provider": self.provider_name,
             "fallback_used": bool(self.fallbacks),
-            "fallback_from": self.fallbacks[0][0] if self.fallbacks else None,
-            "fallback_to": self.fallbacks[0][1] if self.fallbacks else None,
+            "fallback_from": (
+                self.fallbacks[0][0]
+                if self.fallbacks
+                else None
+            ),
+            "fallback_to": (
+                self.fallbacks[0][1]
+                if self.fallbacks
+                else None
+            ),
             "fallbacks": list(self.fallbacks),
             "calls": self.calls,
             "provider_attempts": self.provider_attempts,
             "fallbacks_count": len(self.fallbacks),
+            "last_error": self.last_error,
         }
 
     def reset_telemetry(self) -> None:
