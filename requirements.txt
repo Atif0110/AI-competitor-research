@@ -14,7 +14,7 @@ groq>=0.9
 
 # Scraping
 firecrawl>=0.0.16
-playwright>=1.44
+playwright==1.55.0
 
 # RAG / vector store
 chromadb>=0.4.24
