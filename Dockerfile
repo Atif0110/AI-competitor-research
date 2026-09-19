@@ -2,7 +2,6 @@ FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
 
 WORKDIR /app
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
