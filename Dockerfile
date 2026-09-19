@@ -2,6 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Keep Playwright browsers in a fixed location that is available at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,13 +13,15 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Playwright.
 RUN pip install --no-cache-dir playwright
 
-# Install the exact Chromium browser required by Playwright
+# Install both Chromium and the Chromium Headless Shell.
+# The research scraper requires the headless-shell executable.
 RUN PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    python -m playwright install chromium
+    python -m playwright install chromium chromium-headless-shell
 
-# Make the browser directory readable/executable at runtime
+# Ensure the runtime user can execute the browsers.
 RUN chmod -R 755 /ms-playwright
 
 COPY . .
