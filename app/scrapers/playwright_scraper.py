@@ -12,28 +12,61 @@ logger = logging.getLogger(__name__)
 class PlaywrightScraper(BaseScraper):
     name = "playwright"
 
-    def _fetch_once(self, url: str, proxy: Optional[str],
-                    region: Optional[str] = None) -> ScrapedPage:
+    def _fetch_once(
+        self,
+        url: str,
+        proxy: Optional[str],
+        region: Optional[str] = None,
+    ) -> ScrapedPage:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as e:  # pragma: no cover
-            raise ScrapeError("playwright not installed (pip install playwright)") from e
+            raise ScrapeError(
+                "playwright not installed (pip install playwright)"
+            ) from e
 
         with sync_playwright() as p:
             kwargs = {}
+
             if proxy:
-                parsed = parse_proxy_url(proxy)  # auth / https / socks5 / IPv6 (#21)
+                parsed = parse_proxy_url(proxy)
                 if parsed:
                     kwargs["proxy"] = parsed
-            browser = p.chromium.launch(headless=True, **kwargs)
+
+            # Use the installed Chromium browser channel instead of
+            # Playwright's separate chromium-headless-shell executable.
+            browser = p.chromium.launch(
+                headless=True,
+                channel="chromium",
+                **kwargs,
+            )
+
             try:
                 page = browser.new_page()
-                page.goto(url, timeout=self._timeout() * 1000, wait_until="domcontentloaded")
-                page.wait_for_timeout(1200)  # let JS render
+
+                page.goto(
+                    url,
+                    timeout=self._timeout() * 1000,
+                    wait_until="domcontentloaded",
+                )
+
+                # Allow client-side JavaScript to finish rendering.
+                page.wait_for_timeout(1200)
+
                 markdown = page.inner_text("body")
+
                 if not markdown:
-                    raise ScrapeError("playwright returned empty body text")
-                return ScrapedPage(url=url, markdown=markdown, proxy_used=proxy, region=region)
+                    raise ScrapeError(
+                        "playwright returned empty body text"
+                    )
+
+                return ScrapedPage(
+                    url=url,
+                    markdown=markdown,
+                    proxy_used=proxy,
+                    region=region,
+                )
+
             finally:
                 browser.close()
 
