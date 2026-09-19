@@ -66,7 +66,7 @@ function App() {
   const [intro, setIntro] = useState(true);
 
   useEffect(() => {
-    const id = setTimeout(() => setIntro(false), 2200);
+    const id = setTimeout(() => setIntro(false), 760);
     return () => clearTimeout(id);
   }, []);
 
@@ -134,16 +134,12 @@ function App() {
 }
 
 function IntroScreen() {
-  return <div className="intro-screen">
-    <div className="intro-grid"/>
-    <div className="intro-orbit orbit-a"/>
-    <div className="intro-orbit orbit-b"/>
-    <div className="intro-center">
-      <div className="intro-logo"><span>ACR</span></div>
-      <div className="intro-title">AI COMPETITOR RESEARCH</div>
-      <div className="intro-subtitle">Know. Predict. Stay Ahead.</div>
-      <div className="intro-progress"><i/></div>
-      <div className="intro-status">Preparing intelligence workspace</div>
+  return <div className="intro-screen" aria-label="Loading competitor research workspace">
+    <div className="intro-content">
+      <div className="intro-mark">CR</div>
+      <h1>Competitor Research</h1>
+      <p>Preparing intelligence workspace</p>
+      <div className="intro-line"><span/></div>
     </div>
   </div>;
 }
@@ -205,7 +201,7 @@ function RunPage({ startRun, job, runId, setPage }) {
         <button className="primary wide" disabled={job?.status === 'queued' || job?.status === 'running'}><Icon name="scan" size={17}/>{job?.status === 'running' ? 'Research in progress…' : 'Run intelligence scan'}<span className="button-arrow"><Icon name="arrow" size={15}/></span></button>
       </form></section>
       <section className="surface run-surface"><div className="run-console-head"><div><div className="eyebrow">LIVE RUN CONSOLE</div><h3>{runId || 'Ready when you are'}</h3></div><StatusBadge status={job?.status || 'idle'}/></div>
-        {job ? <><div className="progress-wrap"><div className="progress-meta"><span>{job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Run failed' : 'Processing evidence'}</span><b>{progress}%</b></div><div className="progress"><span style={{width: `${progress}%`}}/></div></div><div className="console-log">{events.length ? events.map((e, i) => <div className="log-event" key={i}><span className="log-check"><Icon name="check" size={13}/></span><div><b>{pretty(e.event)}</b><small>{e.region || e.product || e.urls_discovered || e.pages_scraped || 'Pipeline event'}</small></div><time>{String(i + 1).padStart(2, '0')}</time></div>) : <div className="empty-console"><span className="loader-ring"/>Initializing research pipeline…</div>}{job.current_event?.event === 'scrape_started' && <div className="live-line"><span className="live-wave"/> Scraping {job.current_event.region} · {short(job.current_event.url, 72)}</div>}</div>{job.status === 'completed' && <div className="result-banner"><div><span className="result-icon"><Icon name="check" size={16}/></span><div><b>Research complete</b><small>{job.result?.pages_scraped || 0} pages · {job.result?.extractions_ok || 0} structured observations</small></div></div><button className="secondary" onClick={() => setPage('offers')}>Explore evidence <Icon name="arrow" size={14}/></button></div>}{job.status === 'failed' && <div className="error-banner">{job.error}</div>}</> : <Empty title="No active run" text="Your pipeline console will stream discovery, scraping and extraction events here."/>}
+        {job ? <><ResearchPipeline status={job.status} events={events}/><div className="progress-wrap"><div className="progress-meta"><span>{job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Run failed' : 'Processing evidence'}</span><b>{progress}%</b></div><div className="progress"><span style={{width: `${progress}%`}}/></div></div><div className="console-log">{events.length ? events.map((e, i) => <div className="log-event" key={i}><span className="log-check"><Icon name="check" size={13}/></span><div><b>{pretty(e.event)}</b><small>{e.region || e.product || e.urls_discovered || e.pages_scraped || 'Pipeline event'}</small></div><time>{String(i + 1).padStart(2, '0')}</time></div>) : <div className="empty-console"><span className="loader-ring"/>Initializing research pipeline…</div>}{job.current_event?.event === 'scrape_started' && <div className="live-line"><span className="live-wave"/> Scraping {job.current_event.region} · {short(job.current_event.url, 72)}</div>}</div>{job.status === 'completed' && <div className="result-banner"><div><span className="result-icon"><Icon name="check" size={16}/></span><div><b>Research complete</b><small>{job.result?.pages_scraped || 0} pages · {job.result?.extractions_ok || 0} structured observations</small></div></div><button className="secondary" onClick={() => setPage('offers')}>Explore evidence <Icon name="arrow" size={14}/></button></div>}{job.status === 'failed' && <div className="error-banner">{job.error}</div>}</> : <Empty title="No active run" text="Your pipeline console will stream discovery, scraping and extraction events here."/>}
       </section>
     </div>
   </div>;
@@ -213,6 +209,38 @@ function RunPage({ startRun, job, runId, setPage }) {
 
 function Field({ label, value, onChange, placeholder, type = 'text' }) { return <label className="field"><span>{label}</span><input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} required={label !== 'Focus products'}/></label>; }
 function StatusBadge({ status }) { const labels = { idle: 'Ready', queued: 'Queued', running: 'Running', completed: 'Complete', failed: 'Failed' }; return <span className={`status-badge ${status}`}><i/>{labels[status] || status}</span>; }
+
+function ResearchPipeline({ status, events }) {
+  const stages = ['Discover', 'Scrape', 'Extract', 'Validate', 'Compare', 'Report'];
+  const eventNames = events.map(e => String(e.event || '').toLowerCase());
+
+  const completed = Math.min(
+    stages.length,
+    events.filter(e => e?.event).length
+  );
+
+  const activeIndex = status === 'completed'
+    ? stages.length
+    : status === 'failed'
+      ? Math.min(Math.max(completed - 1, 0), stages.length - 1)
+      : Math.min(completed, stages.length - 1);
+
+  return <div className={`research-pipeline ${status || 'idle'}`}>
+    {stages.map((stage, i) => {
+      const done = status === 'completed' || i < activeIndex;
+      const active = status === 'running' && i === activeIndex;
+      const hasEvent = eventNames.some(e => e.includes(stage.toLowerCase()));
+
+      return <React.Fragment key={stage}>
+        <div className={`research-stage ${done ? 'done' : ''} ${active ? 'active' : ''} ${hasEvent ? 'observed' : ''}`}>
+          <span className="stage-dot">{done ? '✓' : String(i + 1).padStart(2, '0')}</span>
+          <span>{stage}</span>
+        </div>
+        {i < stages.length - 1 && <span className={`stage-connector ${done ? 'done' : ''}`} />}
+      </React.Fragment>;
+    })}
+  </div>;
+}
 
 function Offers({ runId }) {
   const [data, setData] = useState([]), [region, setRegion] = useState(''), [product, setProduct] = useState(''), [loading, setLoading] = useState(false), [selected, setSelected] = useState(null);
