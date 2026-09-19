@@ -8,18 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
 import threading
 import time
 import uuid
 from typing import Optional
-
-# Force Playwright to use the browser directory baked into the Docker image.
-# Render's runtime can expose a different HOME/cache path; explicitly setting
-# this before importing the application pipeline keeps build and runtime paths
-# consistent.
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
 
 from fastapi import BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
