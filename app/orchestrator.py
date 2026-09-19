@@ -1,3 +1,4 @@
+# Corrected duplicate progress-event emissions
 """Pipeline orchestration — ties discovery, region fan-out, geo-aware scraping,
 extraction, storage, analysis, metrics and event detection together.
 
@@ -77,15 +78,6 @@ class Pipeline:
         self.scraper = scraper
         self.progress_callback = progress_callback
         self.insights = InsightsEngine(self.store, self.review_store, self.extractor.client)
-
-    def _progress(self, event: str, **data) -> None:
-        if not self.progress_callback:
-            return
-        payload = {"event": event, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **data}
-        try:
-            self.progress_callback(payload)
-        except Exception:
-            logger.debug("progress callback failed", exc_info=True)
 
     def _progress(self, event: str, **data) -> None:
         if not self.progress_callback:
@@ -201,10 +193,8 @@ class Pipeline:
         self.extractor.client.reset_telemetry()
 
         self._progress("run_started", run_id=run_id, mode="demo" if demo else "live", target_company=target.company)
-        self._progress("run_started", run_id=run_id, mode="demo" if demo else "live", target_company=target.company)
         urls, discovery_errors = self._discover(target, demo)
         stats.discovered = len(urls)
-        self._progress("discovery_complete", run_id=run_id, urls_discovered=len(urls))
         self._progress("discovery_complete", run_id=run_id, urls_discovered=len(urls))
         stats.errors.extend(discovery_errors)
         done = self._checkpoint(run_id)
@@ -231,7 +221,6 @@ class Pipeline:
             ck = f"{url}||{region}"
             if ck in done:
                 continue
-            self._progress("scrape_started", run_id=run_id, url=url, region=region, index=index, total=len(items))
             self._progress("scrape_started", run_id=run_id, url=url, region=region, index=index, total=len(items))
             try:
                 page, log = scraper.fetch(url, region=region)
@@ -294,7 +283,6 @@ class Pipeline:
                         f"({attempted} urls, {stats.urls_failed} failed).",
             ))
 
-        self._progress("run_completed", run_id=run_id, pages_scraped=stats.pages_scraped, extractions_ok=stats.extractions_ok, extractions_failed=stats.extractions_failed, duration_s=duration)
         self._progress("run_completed", run_id=run_id, pages_scraped=stats.pages_scraped, extractions_ok=stats.extractions_ok, extractions_failed=stats.extractions_failed, duration_s=duration)
         logger.info("run %s done: %d pages, %d ok, %d failed in %.1fs (%s mode)",
                     run_id, stats.pages_scraped, stats.extractions_ok,
