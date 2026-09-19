@@ -12,3 +12,5 @@ services:
         value: auto
       - key: API_KEY_REQUIRED
         value: "true"
+      - key: CORS_ORIGINS
+        value: https://ai-competitor-research.onrender.com

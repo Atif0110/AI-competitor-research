@@ -112,7 +112,14 @@ class Settings:
     # API / frontend
     api_key: str | None = field(default_factory=lambda: os.getenv("API_KEY") or None)
     api_key_required: bool = field(default_factory=lambda: _bool_env("API_KEY_REQUIRED", True))
-    cors_origins: List[str] = field(default_factory=lambda: _list_env("CORS_ORIGINS") or ["http://localhost:5173"])
+    # Keep local Vite development working, while making the public Render
+    # frontend work out of the box when this API is deployed without an
+    # explicit CORS_ORIGINS variable. A configured variable always wins.
+    cors_origins: List[str] = field(default_factory=lambda: _list_env("CORS_ORIGINS") or [
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "https://ai-competitor-research.onrender.com",
+    ])
     research_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("RESEARCH_TIMEOUT_SECONDS", "1800")))
     research_rate_limit_per_minute: int = field(default_factory=lambda: int(os.getenv("RESEARCH_RATE_LIMIT_PER_MINUTE", "5")))
 

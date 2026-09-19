@@ -20,7 +20,12 @@ async function api(path, options = {}) {
     ...(key ? { 'X-API-Key': key } : {}),
     ...(options.headers || {}),
   };
-  const res = await fetch(`${API}${path}`, { ...options, headers });
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, { ...options, headers });
+  } catch (error) {
+    throw new Error(`The research API could not be reached. Check the API service and its allowed frontend origin, then retry. (${API})`);
+  }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
