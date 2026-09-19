@@ -63,6 +63,12 @@ function App() {
   const [runId, setRunId] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [intro, setIntro] = useState(true);
+
+  useEffect(() => {
+    const id = setTimeout(() => setIntro(false), 2200);
+    return () => clearTimeout(id);
+  }, []);
 
   const loadHealth = () => api('/health').then(setHealth).catch(e => setToast(e.message));
   useEffect(() => { loadHealth(); }, [refresh]);
@@ -85,6 +91,7 @@ function App() {
   };
 
   const title = NAV.find(x => x[0] === page)?.[1] || 'Overview';
+  if (intro) return <IntroScreen />;
   return <div className="app-shell">
     <div className="ambient ambient-one"/><div className="ambient ambient-two"/>
     <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
@@ -126,6 +133,21 @@ function App() {
   </div>;
 }
 
+function IntroScreen() {
+  return <div className="intro-screen">
+    <div className="intro-grid"/>
+    <div className="intro-orbit orbit-a"/>
+    <div className="intro-orbit orbit-b"/>
+    <div className="intro-center">
+      <div className="intro-logo"><span>ACR</span></div>
+      <div className="intro-title">AI COMPETITOR RESEARCH</div>
+      <div className="intro-subtitle">Know. Predict. Stay Ahead.</div>
+      <div className="intro-progress"><i/></div>
+      <div className="intro-status">Preparing intelligence workspace</div>
+    </div>
+  </div>;
+}
+
 function Dashboard({ setPage, runId, refresh, health }) {
   const [agg, setAgg] = useState(null), [runs, setRuns] = useState([]), [events, setEvents] = useState([]);
   const load = () => Promise.all([
@@ -139,8 +161,8 @@ function Dashboard({ setPage, runId, refresh, health }) {
   return <div className="page-stack">
     <section className="hero-panel reveal">
       <div className="hero-grid"/>
-      <div className="hero-copy"><div className="eyebrow accent"><span className="spark-dot"/> COMPETITIVE INTELLIGENCE</div><h2>{latest?.target_company ? <>Signals for <span>{latest.target_company}</span></> : <>Know what your competitors are<br/><span>changing before you do.</span></>}</h2><p>{latest ? `Latest research run ${latest.run_id} completed in ${avgRuntime}. Explore evidence, pricing moves and market signals from the same run.` : 'Discover products, regional pricing and customer signals, then turn them into traceable intelligence with evidence attached to every observation.'}</p><div className="hero-actions"><button className="primary" onClick={() => setPage('run')}><Icon name="scan" size={16}/> Start research</button><button className="secondary" onClick={() => setPage('insights')}><Icon name="spark" size={16}/> View signals</button></div></div>
-      <div className="hero-orbit"><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="orbit-core"><span>CR</span><small>AI</small></div><div className="orbit-node n1">$</div><div className="orbit-node n2">◎</div><div className="orbit-node n3">✦</div></div>
+      <div className="hero-copy"><div className="eyebrow accent"><span className="spark-dot"/> COMPETITIVE INTELLIGENCE</div><h2>{latest?.target_company ? <>Signals for <span>{latest.target_company}</span></> : <>Know what your competitors are.<br/><span>Doing before everyone else.</span></>}</h2><p>{latest ? `Latest research run ${latest.run_id} completed in ${avgRuntime}. Explore evidence, pricing moves and market signals from the same run.` : 'Discover products, regional pricing and customer signals, then turn them into traceable intelligence with evidence attached to every observation.'}</p><div className="hero-actions"><button className="primary" onClick={() => setPage('run')}><Icon name="scan" size={16}/> Start research</button><button className="secondary" onClick={() => setPage('insights')}><Icon name="spark" size={16}/> View signals</button></div></div>
+      <div className="hero-visual"><div className="hero-glow"/><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="orbit-core"><span>ACR</span><small>INTELLIGENCE</small></div><div className="orbit-node n1">$</div><div className="orbit-node n2">◎</div><div className="orbit-node n3">✦</div><div className="signal-float"><span className="signal-pulse"/> New market signal <b>detected</b></div></div>
       <div className="hero-foot"><span><b>Evidence first</b> Every run retains source context and timestamps.</span><span className="hero-foot-right"><span className="status-dot live"/> {health?.mode === 'live' ? 'Live provider' : 'Deterministic demo'} mode</span></div>
     </section>
 
