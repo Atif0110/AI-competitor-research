@@ -68,9 +68,8 @@ def _resolve_provider_order() -> List[str]:
         return ["demo"]
 
     if forced in _KNOWN_PROVIDERS:
-        # Keep the explicitly selected provider first, but preserve the
-        # project's resilient fallback behavior by appending every other
-        # configured real provider. Demo is never added implicitly here.
+        # An explicitly selected provider must be configured. Do not silently
+        # substitute another provider when the requested provider is missing.
         configured = {
             "gemini": bool(getattr(settings, "gemini_api_key", None)),
             "groq": bool(settings.groq_api_key),
@@ -78,11 +77,15 @@ def _resolve_provider_order() -> List[str]:
             "anthropic": bool(settings.anthropic_api_key),
         }
 
-        order = [forced] if configured.get(forced, False) else [forced]
+        if not configured[forced]:
+            raise LLMError(
+                f"{forced.upper()} provider is selected but its API key is not configured"
+            )
 
-        # Preserve the existing fallback preference used by the project:
-        # Anthropic -> OpenAI -> Groq. Gemini is preferred when explicitly
-        # selected, but remains available as a configured fallback otherwise.
+        order = [forced]
+
+        # Once the selected provider is configured, other configured real
+        # providers may act as operational fallbacks. Demo is never implicit.
         fallback_order = ("anthropic", "openai", "groq", "gemini")
 
         for name in fallback_order:
