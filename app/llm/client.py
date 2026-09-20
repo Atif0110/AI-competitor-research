@@ -68,7 +68,23 @@ def _resolve_provider_order() -> List[str]:
         return ["demo"]
 
     if forced in _KNOWN_PROVIDERS:
-        return [forced]
+        # Keep the explicitly selected provider first, but preserve the
+        # project's resilient fallback behavior by appending every other
+        # configured real provider. Demo is never added implicitly here.
+        configured = {
+            "gemini": bool(getattr(settings, "gemini_api_key", None)),
+            "groq": bool(settings.groq_api_key),
+            "openai": bool(settings.openai_api_key),
+            "anthropic": bool(settings.anthropic_api_key),
+        }
+
+        order = [forced] if configured.get(forced, False) else [forced]
+
+        for name in ("gemini", "groq", "openai", "anthropic"):
+            if name != forced and configured[name]:
+                order.append(name)
+
+        return order
 
     # Auto mode.
     have_gemini = bool(getattr(settings, "gemini_api_key", None))
