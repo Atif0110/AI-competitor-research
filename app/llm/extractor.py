@@ -24,15 +24,21 @@ class ExtractionResult:
 
 class StructuredExtractor:
     """
-    Extract structured product/commercial intelligence from scraped pages.
+    Extract structured commercial intelligence from scraped pages.
 
-    The extractor is deliberately conservative:
-    - informational pages are rejected before LLM extraction
-    - the model is instructed never to invent pricing
-    - malformed/invalid model output is retried
-    - expected region is authoritative
-    - suspicious extractions are retained only with reduced confidence
-    - reviews are extracted independently from product offers
+    Product extraction:
+    - rejects obvious non-commercial URLs
+    - asks the LLM for structured product data
+    - validates the result against ProductOffer
+    - retries malformed/invalid responses
+    - preserves expected-region mismatch telemetry
+    - makes expected_region authoritative
+    - calculates extraction confidence
+
+    Review extraction:
+    - performs one LLM call per page
+    - extracts all explicitly present reviews
+    - converts them into the application's Review schema
     """
 
     _SYSTEM_PROMPT = """
@@ -128,7 +134,7 @@ Rules:
         self.client = client
 
     # ------------------------------------------------------------------
-    # Public product extraction API
+    # PRODUCT EXTRACTION
     # ------------------------------------------------------------------
 
     def extract(
@@ -140,9 +146,6 @@ Rules:
     ) -> ExtractionResult:
         """
         Extract one ProductOffer from page content.
-
-        The method intentionally keeps the historical result contract
-        used by the pipeline and test suite.
         """
 
         if not content or not content.strip():
@@ -163,7 +166,9 @@ Rules:
                 attempts=0,
             )
 
-        expected_region_value = self._region_value(expected_region)
+        expected_region_value = self._region_value(
+            expected_region
+        )
 
         prompt = self._build_product_prompt(
             content=content,
@@ -178,7 +183,6 @@ Rules:
 
         attempts = 0
         previous_error: str | None = None
-        region_mismatch = False
 
         while attempts < max_attempts:
             attempts += 1
@@ -213,7 +217,6 @@ Rules:
                 offer = self._build_offer(
                     parsed=parsed,
                     url=url,
-                    expected_region=expected_region_value,
                 )
 
                 if offer is None:
@@ -221,15 +224,22 @@ Rules:
                         "Model output could not be validated as ProductOffer"
                     )
 
-                region_mismatch = (
-                    expected_region_value is not None
-                    and self._region_value(offer.region)
-                    != expected_region_value
+                # IMPORTANT:
+                # Compare the model's original region BEFORE changing it.
+                model_region = self._region_value(
+                    offer.region
                 )
 
+                region_mismatch = (
+                    expected_region_value is not None
+                    and model_region != expected_region_value
+                )
+
+                # The requested scrape region is authoritative.
                 if expected_region_value is not None:
-                    # The expected scrape region is authoritative.
-                    offer.region = Region(expected_region_value)
+                    offer.region = Region(
+                        expected_region_value
+                    )
 
                 confidence = self._confidence(
                     content,
@@ -254,11 +264,11 @@ Rules:
             confidence=0.0,
             error=previous_error or "Extraction failed",
             attempts=attempts,
-            region_mismatch=region_mismatch,
+            region_mismatch=False,
         )
 
     # ------------------------------------------------------------------
-    # Product prompt / parsing
+    # PRODUCT PROMPT
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -290,17 +300,22 @@ If this is not a commercial product/offer page, return:
 Never invent a price or other product information.
 """.strip()
 
+    # ------------------------------------------------------------------
+    # JSON PARSING
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _parse_json(raw: str) -> dict[str, Any]:
-        """Parse a JSON object from provider output."""
+        """
+        Parse a JSON object from provider output.
+        """
 
         if not raw:
             raise ValueError("Empty LLM response")
 
         text = raw.strip()
 
-        # Remove accidental markdown fences without making them part
-        # of the provider contract.
+        # Gracefully handle accidental markdown fences.
         if text.startswith("```"):
             text = re.sub(
                 r"^```(?:json)?\s*",
@@ -322,19 +337,24 @@ Never invent a price or other product information.
             ) from exc
 
         if not isinstance(parsed, dict):
-            raise ValueError("LLM response must be a JSON object")
+            raise ValueError(
+                "LLM response must be a JSON object"
+            )
 
         return parsed
 
+    # ------------------------------------------------------------------
+    # PRODUCT VALIDATION
+    # ------------------------------------------------------------------
+
+    @staticmethod
     def _build_offer(
-        self,
         *,
         parsed: dict[str, Any],
         url: str,
-        expected_region: str | None,
     ) -> ProductOffer | None:
         """
-        Convert provider JSON into the application's ProductOffer schema.
+        Convert provider JSON into ProductOffer.
         """
 
         data = dict(parsed)
@@ -346,9 +366,6 @@ Never invent a price or other product information.
 
         data.setdefault("url", url)
 
-        if expected_region is not None:
-            data["region"] = expected_region
-
         try:
             return ProductOffer.model_validate(data)
         except Exception as exc:
@@ -357,7 +374,7 @@ Never invent a price or other product information.
             ) from exc
 
     # ------------------------------------------------------------------
-    # Evidence and confidence
+    # PRICE EVIDENCE
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -366,11 +383,7 @@ Never invent a price or other product information.
         offer: ProductOffer,
     ) -> bool:
         """
-        Check whether the page contains credible pricing evidence.
-
-        The implementation intentionally supports both normal numeric
-        prices and cases where the exact price may be represented through
-        standard pricing language.
+        Check whether pricing is reasonably supported by the source.
         """
 
         if offer.price <= 0:
@@ -390,14 +403,14 @@ Never invent a price or other product information.
             "BRL": ["r$", "brl"],
         }
 
-        currency_tokens_for_offer = currency_tokens.get(
+        supported_tokens = currency_tokens.get(
             offer.currency.value,
             [offer.currency.value.lower()],
         )
 
         currency_present = any(
             token.lower() in text
-            for token in currency_tokens_for_offer
+            for token in supported_tokens
         )
 
         if not currency_present:
@@ -416,8 +429,7 @@ Never invent a price or other product information.
         if not pricing_language:
             return False
 
-        # Very small values are especially suspicious because they are
-        # common signs of hallucinated extraction from informational pages.
+        # Extremely small prices need exact numeric evidence.
         if offer.price < 0.5:
             price_value = f"{offer.price:g}"
 
@@ -428,9 +440,13 @@ Never invent a price or other product information.
                 )
             )
 
-        # For normal commercial prices, explicit currency + pricing
-        # language is sufficient evidence for the compatibility contract.
+        # Normal commercial prices are accepted when the page
+        # contains currency + pricing language.
         return True
+
+    # ------------------------------------------------------------------
+    # CONFIDENCE
+    # ------------------------------------------------------------------
 
     @classmethod
     def _confidence(
@@ -441,21 +457,29 @@ Never invent a price or other product information.
         """
         Calculate extraction confidence.
 
-        A fully supported normal offer receives 1.0.
-        Suspicious or weak evidence reduces confidence without
-        unnecessarily rejecting otherwise valid historical fixtures.
+        Fully supported normal offers receive 1.0.
+        Suspicious/weak evidence reduces confidence.
         """
 
         text = content.lower()
 
         checks: list[bool] = []
 
-        # Price evidence.
+        # --------------------------------------------------------------
+        # 1. Price evidence
+        # --------------------------------------------------------------
+
         checks.append(
-            cls._price_is_evidenced(content, offer)
+            cls._price_is_evidenced(
+                content,
+                offer,
+            )
         )
 
-        # Currency evidence.
+        # --------------------------------------------------------------
+        # 2. Currency evidence
+        # --------------------------------------------------------------
+
         currency_tokens = {
             "USD": ["$", "usd"],
             "EUR": ["€", "eur"],
@@ -468,7 +492,7 @@ Never invent a price or other product information.
             "BRL": ["r$", "brl"],
         }
 
-        currency_values = currency_tokens.get(
+        supported_currency_tokens = currency_tokens.get(
             offer.currency.value,
             [offer.currency.value.lower()],
         )
@@ -476,51 +500,59 @@ Never invent a price or other product information.
         checks.append(
             any(
                 token.lower() in text
-                for token in currency_values
+                for token in supported_currency_tokens
             )
         )
 
-        # Product-name evidence.
+        # --------------------------------------------------------------
+        # 3. Product name evidence
+        # --------------------------------------------------------------
+
         product_name = offer.product_name.strip().lower()
 
-        if product_name:
-            product_tokens = [
-                token
-                for token in re.findall(
-                    r"[a-z0-9]+",
-                    product_name,
-                )
-                if len(token) >= 3
-            ]
+        product_tokens = [
+            token
+            for token in re.findall(
+                r"[a-z0-9]+",
+                product_name,
+            )
+            if len(token) >= 3
+        ]
 
-            if product_tokens:
-                checks.append(
-                    any(
-                        token in text
-                        for token in product_tokens
-                    )
+        if product_tokens:
+            checks.append(
+                any(
+                    token in text
+                    for token in product_tokens
                 )
-            else:
-                checks.append(False)
+            )
         else:
             checks.append(False)
 
-        # Availability evidence.
+        # --------------------------------------------------------------
+        # 4. Availability evidence
+        # --------------------------------------------------------------
+
         availability_value = (
             offer.availability.value
-            if hasattr(offer.availability, "value")
+            if hasattr(
+                offer.availability,
+                "value",
+            )
             else str(offer.availability)
         )
 
         availability_tokens = {
             "in_stock": [
                 "in stock",
+                "in_stock",
                 "available",
                 "buy now",
                 "add to cart",
             ],
             "out_of_stock": [
                 "out of stock",
+                "out_of_stock",
                 "unavailable",
                 "sold out",
             ],
@@ -529,6 +561,7 @@ Never invent a price or other product information.
                 "preorder",
                 "coming soon",
             ],
+            "unknown": [],
         }
 
         relevant_availability = availability_tokens.get(
@@ -544,27 +577,36 @@ Never invent a price or other product information.
                 )
             )
         else:
-            # Unknown availability should not destroy an otherwise
-            # valid extraction.
+            # Unknown availability is not negative evidence.
             checks.append(True)
 
-        # Price sanity.
+        # --------------------------------------------------------------
+        # 5. Price sanity
+        # --------------------------------------------------------------
+
         checks.append(
             0.5 <= offer.price <= 500_000
         )
 
-        if not checks:
-            return 0.0
-
-        confidence = sum(checks) / len(checks)
+        confidence = (
+            sum(checks) / len(checks)
+            if checks
+            else 0.0
+        )
 
         return round(
-            max(0.0, min(1.0, confidence)),
+            max(
+                0.0,
+                min(
+                    1.0,
+                    confidence,
+                ),
+            ),
             2,
         )
 
     # ------------------------------------------------------------------
-    # Review extraction
+    # REVIEW EXTRACTION
     # ------------------------------------------------------------------
 
     def extract_reviews(
@@ -580,31 +622,18 @@ Never invent a price or other product information.
         """
         Extract all reviews from a scraped page.
 
-        This method intentionally performs exactly one LLM call.
-
-        The pipeline expects the provider to return:
-
-            {
-                "reviews": [
-                    {
-                        "review_text": "...",
-                        "rating": 4.0,
-                        "review_date": null,
-                        "reviewer": null
-                    }
-                ]
-            }
-
-        The returned dictionaries are converted into the application's
-        Review schema.
+        Exactly one LLM call is made for this operation.
         """
 
         if not content or not content.strip():
             return [], False
 
-        region_value = self._region_value(
-            expected_region
-        ) or "US"
+        region_value = (
+            self._region_value(
+                expected_region
+            )
+            or "US"
+        )
 
         prompt = f"""
 Extract all actual customer reviews from this webpage.
@@ -651,18 +680,29 @@ Never invent review information.
         except Exception:
             return [], False
 
-        raw_reviews = parsed.get("reviews", [])
+        raw_reviews = parsed.get(
+            "reviews",
+            [],
+        )
 
-        if not isinstance(raw_reviews, list):
+        if not isinstance(
+            raw_reviews,
+            list,
+        ):
             return [], False
 
         reviews: list[Review] = []
 
         for item in raw_reviews:
-            if not isinstance(item, dict):
+            if not isinstance(
+                item,
+                dict,
+            ):
                 continue
 
-            review_text = item.get("review_text")
+            review_text = item.get(
+                "review_text"
+            )
 
             if not review_text:
                 continue
@@ -673,23 +713,37 @@ Never invent review information.
                     or "Unknown Product"
                 ),
                 "region": region_value,
-                "rating": item.get("rating"),
-                "review_text": str(review_text).strip(),
-                "reviewer": item.get("reviewer"),
-                "review_date": item.get("review_date"),
+                "rating": item.get(
+                    "rating"
+                ),
+                "review_text": str(
+                    review_text
+                ).strip(),
+                "reviewer": item.get(
+                    "reviewer"
+                ),
+                "review_date": item.get(
+                    "review_date"
+                ),
                 "source_url": url,
                 "competitor": competitor,
                 "run_id": run_id,
             }
 
             try:
-                review = Review.model_validate(data)
+                review = Review.model_validate(
+                    data
+                )
             except Exception:
                 continue
 
             reviews.append(review)
 
         return reviews, False
+
+    # ------------------------------------------------------------------
+    # BACKWARD-COMPATIBLE SINGLE REVIEW API
+    # ------------------------------------------------------------------
 
     def extract_review(
         self,
@@ -704,8 +758,7 @@ Never invent review information.
         """
         Backward-compatible single-review API.
 
-        This remains separate from extract_reviews(), which is the
-        pipeline-facing multi-review method.
+        The pipeline-facing API is extract_reviews().
         """
 
         reviews, _fallback = self.extract_reviews(
@@ -717,23 +770,33 @@ Never invent review information.
             product_name=product_name,
         )
 
-        return reviews[0] if reviews else None
+        return (
+            reviews[0]
+            if reviews
+            else None
+        )
 
     # ------------------------------------------------------------------
-    # URL / region helpers
+    # URL HELPERS
     # ------------------------------------------------------------------
 
     @classmethod
-    def _is_non_offer_url(cls, url: str) -> bool:
+    def _is_non_offer_url(
+        cls,
+        url: str,
+    ) -> bool:
         """
-        Reject URL paths that are overwhelmingly likely to be
-        informational rather than commercial offer pages.
+        Reject paths that clearly indicate informational pages.
         """
 
         if not url:
             return False
 
-        path = url.split("?", 1)[0].split("#", 1)[0]
+        path = (
+            url
+            .split("?", 1)[0]
+            .split("#", 1)[0]
+        )
 
         segments = [
             segment.strip().lower()
@@ -746,6 +809,10 @@ Never invent review information.
             for segment in segments
         )
 
+    # ------------------------------------------------------------------
+    # REGION HELPERS
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _region_value(
         region: Region | str | None,
@@ -753,10 +820,15 @@ Never invent review information.
         if region is None:
             return None
 
-        if isinstance(region, Region):
+        if isinstance(
+            region,
+            Region,
+        ):
             return region.value
 
-        value = str(region).strip()
+        value = str(
+            region
+        ).strip()
 
         if not value:
             return None
