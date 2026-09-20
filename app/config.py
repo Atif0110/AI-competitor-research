@@ -203,6 +203,7 @@ class Settings:
 
     # Explicit values:
     #   auto
+    #   gemini
     #   groq
     #   openai
     #   anthropic
@@ -212,6 +213,21 @@ class Settings:
             "LLM_PROVIDER",
             "auto",
         ).lower()
+    )
+
+    gemini_api_key: str | None = field(
+        default_factory=lambda: _optional_env("GEMINI_API_KEY")
+    )
+
+    gemini_model: str = field(
+        default_factory=lambda: _str_env(
+            "GEMINI_MODEL",
+            "gemini-2.5-flash",
+        )
+    )
+
+    gemini_base_url: str | None = field(
+        default_factory=lambda: _optional_env("GEMINI_BASE_URL")
     )
 
     groq_api_key: str | None = field(
@@ -430,7 +446,8 @@ class Settings:
         """Return whether at least one supported LLM credential is configured."""
 
         return bool(
-            self.groq_api_key
+            self.gemini_api_key
+            or self.groq_api_key
             or self.openai_api_key
             or self.anthropic_api_key
         )
