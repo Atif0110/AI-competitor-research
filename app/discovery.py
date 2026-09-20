@@ -36,11 +36,12 @@ logger = logging.getLogger(__name__)
 # - pricing and plans
 # - features/capabilities
 # - enterprise/solutions/use cases
-# - integrations/platform pages
+# - platform pages
+# - apps
 # - reviews/comparisons
 #
-# Blog/news/legal/careers URLs are intentionally excluded unless they also
-# contain one of the relevant intelligence segments below.
+# Blog/news/legal/careers/integration URLs are intentionally excluded unless
+# they also contain one of the relevant intelligence segments below.
 _RELEVANT_PATH_PATTERNS = re.compile(
     r"/("
     r"product|products|p|pd|item|items|dp|"
@@ -50,7 +51,7 @@ _RELEVANT_PATH_PATTERNS = re.compile(
     r"features|feature|capabilities|"
     r"solutions|solution|use-cases|usecase|"
     r"enterprise|business|teams|team|"
-    r"platform|integrations|integration|"
+    r"platform|"
     r"apps|app|"
     r"compare|comparison|comparisons|alternative|alternatives|"
     r"reviews|review|"
@@ -130,6 +131,7 @@ def dedupe_urls(urls: Iterable[str]) -> List[str]:
             continue
 
         canonical = canonical_url(url)
+
         if not canonical.startswith(("http://", "https://")):
             continue
 
@@ -166,11 +168,13 @@ def _firecrawl_link_url(link) -> str | None:
 
     if isinstance(link, dict):
         value = link.get("url")
+
         if isinstance(value, str):
             return value.strip() or None
 
     # Be tolerant of SDK-style objects exposing a `.url` attribute.
     value = getattr(link, "url", None)
+
     if isinstance(value, str):
         return value.strip() or None
 
