@@ -14,11 +14,13 @@ For backwards-compatible local tests, LLM_PROVIDER=auto with no provider
 credentials still uses the deterministic DemoClient. Explicit providers never
 silently fall back to demo.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from typing import List, Optional
+from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
 
@@ -52,7 +54,7 @@ def _resolve_provider_order() -> List[str]:
     """Resolve the configured provider chain.
 
     Explicit provider:
-        gemini/groq/openai/anthropic -> that provider only
+        gemini/groq/openai/anthropic -> that provider first
 
     Demo:
         demo -> demo only
@@ -68,8 +70,6 @@ def _resolve_provider_order() -> List[str]:
         return ["demo"]
 
     if forced in _KNOWN_PROVIDERS:
-        # An explicitly selected provider must be configured. Do not silently
-        # substitute another provider when the requested provider is missing.
         configured = {
             "gemini": bool(getattr(settings, "gemini_api_key", None)),
             "groq": bool(settings.groq_api_key),
@@ -79,13 +79,12 @@ def _resolve_provider_order() -> List[str]:
 
         if not configured[forced]:
             raise LLMError(
-                f"{forced.upper()} provider is selected but its API key is not configured"
+                f"{forced.upper()} provider is selected but its API key "
+                "is not configured"
             )
 
         order = [forced]
 
-        # Once the selected provider is configured, other configured real
-        # providers may act as operational fallbacks. Demo is never implicit.
         fallback_order = ("anthropic", "openai", "groq", "gemini")
 
         for name in fallback_order:
@@ -102,13 +101,12 @@ def _resolve_provider_order() -> List[str]:
 
     order: List[str] = []
 
-    # Gemini is the preferred provider when configured.
     if have_gemini:
         order.append("gemini")
 
-    # Preserve the original project's OpenAI/Anthropic behavior.
     if have_openai and have_anthropic:
         preferred = "anthropic"
+
         if settings.llm_provider in ("openai", "anthropic"):
             preferred = settings.llm_provider
 
@@ -116,8 +114,10 @@ def _resolve_provider_order() -> List[str]:
         order.append(
             "openai" if preferred == "anthropic" else "anthropic"
         )
+
     elif have_anthropic:
         order.append("anthropic")
+
     elif have_openai:
         order.append("openai")
 
@@ -178,19 +178,72 @@ class _GeminiClient:
         return output
 
 
+def _normalize_groq_base_url(value: Optional[str]) -> Optional[str]:
+    """Normalize Groq's OpenAI-compatible base URL.
+
+    Groq's SDK already targets the OpenAI-compatible `/openai/v1`
+    endpoint. Supplying `/openai/v1` twice produces:
+
+        /openai/v1/openai/v1/chat/completions
+
+    Accept either:
+        https://api.groq.com
+    or:
+        https://api.groq.com/openai/v1
+
+    and normalize both to the SDK-safe origin.
+    """
+    if not value:
+        return None
+
+    value = value.strip().rstrip("/")
+
+    parsed = urlparse(value)
+
+    if not parsed.scheme or not parsed.netloc:
+        return value
+
+    path = parsed.path.rstrip("/")
+
+    if path.lower() == "/openai/v1":
+        path = ""
+
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            path,
+            "",
+            parsed.query,
+            "",
+        )
+    ).rstrip("/")
+
+
 class _GroqClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from groq import Groq
 
-        client = Groq(
-            api_key=settings.groq_api_key,
-            base_url=settings.groq_base_url,
+        kwargs = {
+            "api_key": settings.groq_api_key,
+        }
+
+        normalized_base_url = _normalize_groq_base_url(
+            settings.groq_base_url
         )
+
+        if normalized_base_url:
+            kwargs["base_url"] = normalized_base_url
+
+        client = Groq(**kwargs)
 
         response = client.chat.completions.create(
             model=settings.groq_model,
             messages=[
-                {"role": message.role, "content": message.content}
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
                 for message in messages
             ],
             temperature=0,
@@ -203,7 +256,9 @@ class _OpenAIClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from openai import OpenAI
 
-        kwargs = {"api_key": settings.openai_api_key}
+        kwargs = {
+            "api_key": settings.openai_api_key,
+        }
 
         if settings.openai_base_url:
             kwargs["base_url"] = settings.openai_base_url
@@ -211,7 +266,10 @@ class _OpenAIClient:
         client = OpenAI(**kwargs)
 
         payload = [
-            {"role": message.role, "content": message.content}
+            {
+                "role": message.role,
+                "content": message.content,
+            }
             for message in messages
         ]
 
@@ -220,13 +278,16 @@ class _OpenAIClient:
                 model=settings.openai_model,
                 input=payload,
             )
+
             return getattr(response, "output_text", "") or ""
+
         except Exception:
             response = client.chat.completions.create(
                 model=settings.openai_model,
                 messages=payload,
                 temperature=0,
             )
+
             return response.choices[0].message.content or ""
 
 
@@ -234,7 +295,9 @@ class _AnthropicClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         import anthropic
 
-        kwargs = {"api_key": settings.anthropic_api_key}
+        kwargs = {
+            "api_key": settings.anthropic_api_key,
+        }
 
         if settings.anthropic_base_url:
             kwargs["base_url"] = settings.anthropic_base_url
@@ -257,7 +320,12 @@ class _AnthropicClient:
             model=settings.anthropic_model,
             max_tokens=2048,
             system=system or None,
-            messages=[{"role": "user", "content": user}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": user,
+                }
+            ],
         )
 
         return "".join(
@@ -279,11 +347,13 @@ class DemoClient:
             for message in messages
             if message.role == "user"
         )
+
         system = "\n".join(
             message.content
             for message in messages
             if message.role == "system"
         )
+
         low_sys = system.lower()
 
         if "review_text" in low_sys or (
@@ -333,7 +403,10 @@ class DemoClient:
                         "Sound quality is superb, noise cancellation works great.",
                     ],
                     "feature_severities": [
-                        {"feature": "charging", "severity": 3}
+                        {
+                            "feature": "charging",
+                            "severity": 3,
+                        }
                     ],
                 },
                 ensure_ascii=False,
@@ -345,6 +418,7 @@ class DemoClient:
                 user,
                 re.M | re.I,
             )
+
             return match.group(1).strip() if match else ""
 
         price = grab("Price") or "0"
@@ -357,7 +431,12 @@ class DemoClient:
         product = grab("Product")
 
         if not product:
-            match = re.search(r"^#\s+(.+)$", user, re.M)
+            match = re.search(
+                r"^#\s+(.+)$",
+                user,
+                re.M,
+            )
+
             product = (
                 match.group(1).strip()
                 if match
@@ -425,7 +504,9 @@ class LLMClient:
         self.cooldown_seconds = 60
 
         if settings.llm_provider == "demo" or settings.demo_mode:
-            self._providers = [("demo", DemoClient())]
+            self._providers = [
+                ("demo", DemoClient())
+            ]
             logger.info("Demo LLM provider enabled")
             return
 
@@ -459,35 +540,53 @@ class LLMClient:
                 continue
 
             _warn_if_malformed(name, key)
-            self._providers.append((name, factories[name]()))
+
+            self._providers.append(
+                (
+                    name,
+                    factories[name](),
+                )
+            )
 
         if not self._providers:
-            # Keep the existing project's offline test behavior when the
-            # provider is not explicitly selected. Production should set
-            # LLM_PROVIDER=gemini (or another real provider).
             if settings.llm_provider == "auto":
                 logger.warning(
                     "No LLM keys configured in auto mode; using deterministic "
                     "demo provider for offline/test compatibility"
                 )
-                self._providers = [("demo", DemoClient())]
+
+                self._providers = [
+                    ("demo", DemoClient())
+                ]
+
             else:
                 raise LLMError(
                     "No LLM provider is configured. Set "
                     "LLM_PROVIDER and its corresponding API key, or "
                     "explicitly set DEMO_MODE=true for offline/demo use."
                 )
+
         else:
             logger.info(
                 "LLM provider chain resolved: %s",
-                " -> ".join(name for name, _ in self._providers),
+                " -> ".join(
+                    name
+                    for name, _ in self._providers
+                ),
             )
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+    ) -> str:
         if not self._providers:
-            raise LLMError("No LLM provider is configured")
+            raise LLMError(
+                "No LLM provider is configured"
+            )
 
         self.calls += 1
+
         last_error: Optional[Exception] = None
 
         if (
@@ -500,10 +599,17 @@ class LLMClient:
         ):
             self._current = 0
 
-        previous_provider = self._providers[self._current][0]
+        previous_provider = self._providers[
+            self._current
+        ][0]
 
-        for offset in range(len(self._providers)):
-            index = (self._current + offset) % len(self._providers)
+        for offset in range(
+            len(self._providers)
+        ):
+            index = (
+                self._current + offset
+            ) % len(self._providers)
+
             name, client = self._providers[index]
 
             self.provider_attempts += 1
@@ -511,8 +617,14 @@ class LLMClient:
             try:
                 output = client.complete(
                     [
-                        ChatMessage("system", system),
-                        ChatMessage("user", user),
+                        ChatMessage(
+                            "system",
+                            system,
+                        ),
+                        ChatMessage(
+                            "user",
+                            user,
+                        ),
                     ]
                 )
 
@@ -523,9 +635,15 @@ class LLMClient:
 
                 if name != previous_provider:
                     self.fallbacks.append(
-                        (previous_provider, name)
+                        (
+                            previous_provider,
+                            name,
+                        )
                     )
-                    self._fallback_since = time.monotonic()
+
+                    self._fallback_since = (
+                        time.monotonic()
+                    )
 
                 if index == 0:
                     self._fallback_since = None
@@ -551,7 +669,9 @@ class LLMClient:
 
     @property
     def provider_name(self) -> str:
-        return self._providers[self._current][0]
+        return self._providers[
+            self._current
+        ][0]
 
     def telemetry(self) -> dict:
         return {
