@@ -17,12 +17,7 @@ class ExtractionResult:
     confidence: float = 0.0
     error: str | None = None
     raw: dict[str, Any] | None = None
-
-    # Extraction telemetry.
     attempts: int = 1
-
-    # True when the LLM returned a different region from the
-    # region requested by the pipeline.
     region_mismatch: bool = False
 
 
@@ -30,14 +25,14 @@ class StructuredExtractor:
     """
     Extract structured product offers and reviews from scraped content.
 
-    Design goals:
-    - Reject obvious non-commercial pages before LLM extraction.
-    - Never silently invent prices.
-    - Preserve existing pipeline/test compatibility.
-    - Validate structured output through Pydantic.
-    - Track extraction attempts.
-    - Track region mismatches.
-    - Produce deterministic evidence-backed confidence.
+    The extractor:
+    - rejects obvious informational/non-commercial URLs
+    - requires evidence for prices
+    - validates structured output with Pydantic
+    - retries malformed/invalid LLM responses
+    - tracks extraction attempts
+    - tracks region mismatches
+    - preserves the expected-region pipeline contract
     """
 
     _NON_OFFER_PATH_SEGMENTS = {
@@ -136,7 +131,7 @@ If no actual review is present:
         self.client = client
 
     # ------------------------------------------------------------------
-    # Public API
+    # Product extraction
     # ------------------------------------------------------------------
 
     def extract(
@@ -148,16 +143,6 @@ If no actual review is present:
         expected_region: Region | str | None = None,
         run_id: str | None = None,
     ) -> ExtractionResult:
-        """
-        Extract a ProductOffer.
-
-        `expected_region` is retained for compatibility with the
-        existing orchestrator and test suite.
-
-        If expected_region is supplied, it is authoritative over
-        whatever region the LLM returns.
-        """
-
         attempts = 0
 
         effective_region = (
@@ -172,10 +157,6 @@ If no actual review is present:
             effective_region_value = str(effective_region)
         else:
             effective_region_value = None
-
-        # --------------------------------------------------------------
-        # URL-level filtering
-        # --------------------------------------------------------------
 
         if self._is_non_offer_url(url):
             return ExtractionResult(
@@ -197,251 +178,219 @@ If no actual review is present:
             region=effective_region_value,
         )
 
-        # --------------------------------------------------------------
-        # First LLM attempt
-        # --------------------------------------------------------------
+        max_attempts = max(
+            1,
+            int(settings.extraction_max_attempts),
+        )
 
-        attempts += 1
-
-        try:
-            first_raw = self.client.complete(
-                self._SYSTEM_PROMPT,
-                prompt,
-            )
-        except Exception as exc:
-            return ExtractionResult(
-                ok=False,
-                error=f"LLM extraction failed: {exc}",
-                attempts=attempts,
-            )
+        last_raw: dict[str, Any] | None = None
+        last_error = "Extraction failed."
 
         # --------------------------------------------------------------
-        # Parse first response
+        # Retry loop
+        #
+        # Important: malformed JSON must consume all configured
+        # extraction attempts. The test suite expects 3 when
+        # EXTRACTION_MAX_ATTEMPTS=3.
         # --------------------------------------------------------------
 
-        try:
-            parsed = self._parse_json(first_raw)
-        except Exception as first_parse_error:
-            retry_prompt = self._build_retry_prompt(
-                original_prompt=prompt,
-                previous_output={"raw": str(first_raw)},
-                validation_error=str(first_parse_error),
-            )
-
+        while attempts < max_attempts:
             attempts += 1
 
-            try:
-                retry_raw = self.client.complete(
-                    self._SYSTEM_PROMPT,
-                    retry_prompt,
-                )
-            except Exception as retry_exc:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Initial extraction returned invalid JSON and "
-                        f"corrective retry failed: {retry_exc}"
+            if attempts == 1:
+                current_system = self._SYSTEM_PROMPT
+                current_prompt = prompt
+            else:
+                current_system = self._SYSTEM_PROMPT
+                current_prompt = self._build_retry_prompt(
+                    original_prompt=prompt,
+                    previous_output=(
+                        last_raw
+                        if last_raw is not None
+                        else {"raw": ""}
                     ),
-                    attempts=attempts,
+                    validation_error=last_error,
                 )
 
             try:
-                parsed = self._parse_json(retry_raw)
-            except Exception as retry_parse_error:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "LLM returned invalid JSON after corrective retry: "
-                        f"{retry_parse_error}"
-                    ),
-                    attempts=attempts,
-                )
-
-        # --------------------------------------------------------------
-        # Explicit skip
-        # --------------------------------------------------------------
-
-        if parsed.get("skip") is True:
-            return ExtractionResult(
-                ok=False,
-                error="LLM determined that the page is not a valid offer.",
-                raw=parsed,
-                attempts=attempts,
-            )
-
-        # --------------------------------------------------------------
-        # Region mismatch detection
-        # --------------------------------------------------------------
-
-        region_mismatch = False
-
-        if effective_region_value is not None:
-            returned_region = parsed.get("region")
-
-            if returned_region is not None:
-                returned_region_value = (
-                    returned_region.value
-                    if isinstance(returned_region, Region)
-                    else str(returned_region)
-                )
-
-                region_mismatch = (
-                    returned_region_value
-                    != effective_region_value
-                )
-
-        # --------------------------------------------------------------
-        # Pydantic validation
-        # --------------------------------------------------------------
-
-        try:
-            offer = self._validate_offer(
-                parsed,
-                url=url,
-                expected_region=effective_region_value,
-                run_id=run_id,
-            )
-
-        except Exception as first_error:
-            retry_prompt = self._build_retry_prompt(
-                original_prompt=prompt,
-                previous_output=parsed,
-                validation_error=str(first_error),
-            )
-
-            attempts += 1
-
-            try:
-                retry_raw = self.client.complete(
-                    self._SYSTEM_PROMPT,
-                    retry_prompt,
+                raw_response = self.client.complete(
+                    current_system,
+                    current_prompt,
                 )
             except Exception as exc:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Initial extraction failed validation and "
-                        f"corrective retry failed: {exc}"
-                    ),
-                    raw=parsed,
-                    attempts=attempts,
-                    region_mismatch=region_mismatch,
-                )
+                last_error = f"LLM extraction failed: {exc}"
+
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=last_error,
+                        attempts=attempts,
+                    )
+
+                continue
 
             try:
-                retry_parsed = self._parse_json(retry_raw)
-            except Exception as retry_parse_error:
+                parsed = self._parse_json(raw_response)
+            except Exception as exc:
+                last_error = str(exc)
+                last_raw = None
+
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=(
+                            "LLM returned invalid JSON after "
+                            f"{attempts} attempts: {exc}"
+                        ),
+                        attempts=attempts,
+                    )
+
+                continue
+
+            last_raw = parsed
+
+            if parsed.get("skip") is True:
                 return ExtractionResult(
                     ok=False,
-                    error=(
-                        "Corrective retry returned invalid JSON: "
-                        f"{retry_parse_error}"
-                    ),
+                    error="LLM determined that the page is not a valid offer.",
                     raw=parsed,
                     attempts=attempts,
-                    region_mismatch=region_mismatch,
                 )
 
-            if retry_parsed.get("skip") is True:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Corrective extraction determined the page "
-                        "is not an offer."
-                    ),
-                    raw=retry_parsed,
-                    attempts=attempts,
-                    region_mismatch=region_mismatch,
-                )
+            # ----------------------------------------------------------
+            # Region mismatch
+            # ----------------------------------------------------------
 
-            # Recalculate region mismatch using the corrected output.
-            if effective_region_value is not None:
-                returned_region = retry_parsed.get("region")
+            region_mismatch = self._region_mismatch(
+                parsed,
+                effective_region_value,
+            )
 
-                if returned_region is not None:
-                    returned_region_value = (
-                        returned_region.value
-                        if isinstance(returned_region, Region)
-                        else str(returned_region)
-                    )
-
-                    region_mismatch = (
-                        returned_region_value
-                        != effective_region_value
-                    )
+            # ----------------------------------------------------------
+            # Pydantic validation
+            # ----------------------------------------------------------
 
             try:
                 offer = self._validate_offer(
-                    retry_parsed,
+                    parsed,
                     url=url,
                     expected_region=effective_region_value,
                     run_id=run_id,
                 )
 
-                parsed = retry_parsed
+            except Exception as exc:
+                last_error = str(exc)
 
-            except Exception as retry_error:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Structured extraction failed validation "
-                        f"after retry: {retry_error}"
-                    ),
-                    raw=retry_parsed,
-                    attempts=attempts,
-                    region_mismatch=region_mismatch,
-                )
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=(
+                            "Structured extraction failed validation "
+                            f"after {attempts} attempts: {exc}"
+                        ),
+                        raw=parsed,
+                        attempts=attempts,
+                        region_mismatch=region_mismatch,
+                    )
 
-        # --------------------------------------------------------------
-        # Price evidence guard
-        # --------------------------------------------------------------
+                continue
 
-        if not self._price_is_evidenced(content, offer):
-            return ExtractionResult(
-                ok=False,
-                error=(
+            # ----------------------------------------------------------
+            # Evidence guard
+            # ----------------------------------------------------------
+
+            if not self._price_is_evidenced(
+                content,
+                offer,
+            ):
+                last_error = (
                     "Extracted price is not sufficiently supported "
                     "by source content."
-                ),
+                )
+
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=last_error,
+                        raw=parsed,
+                        attempts=attempts,
+                        region_mismatch=region_mismatch,
+                    )
+
+                continue
+
+            # ----------------------------------------------------------
+            # Confidence
+            # ----------------------------------------------------------
+
+            confidence = self._confidence(
+                content,
+                offer,
+            )
+
+            final_offer = offer.model_copy(
+                update={
+                    "extraction_confidence": confidence,
+                }
+            )
+
+            return ExtractionResult(
+                ok=True,
+                offer=final_offer,
+                confidence=confidence,
                 raw=parsed,
                 attempts=attempts,
                 region_mismatch=region_mismatch,
             )
 
-        # --------------------------------------------------------------
-        # Confidence
-        # --------------------------------------------------------------
-
-        confidence = self._confidence(
-            content,
-            offer,
-        )
-
-        final_offer = offer.model_copy(
-            update={
-                "extraction_confidence": confidence,
-            }
-        )
-
         return ExtractionResult(
-            ok=True,
-            offer=final_offer,
-            confidence=confidence,
-            raw=parsed,
+            ok=False,
+            error=last_error,
+            raw=last_raw,
             attempts=attempts,
-            region_mismatch=region_mismatch,
         )
 
     # ------------------------------------------------------------------
-    # Review extraction
+    # Review extraction compatibility API
     # ------------------------------------------------------------------
+
+    def extract_reviews(
+        self,
+        content: str,
+        url: str,
+        *,
+        expected_region: Region | str | None = None,
+        competitor: str | None = None,
+        run_id: str | None = None,
+        product_name: str | None = None,
+    ) -> tuple[list[Review], bool]:
+        """
+        Compatibility API expected by Pipeline.
+
+        Returns:
+            (reviews, fallback_used)
+
+        The current review extractor produces at most one structured
+        review from a page. The second return value indicates whether
+        the fallback path was used.
+        """
+
+        result = self.extract_review(
+            content,
+            url,
+        )
+
+        if result.ok and result.review is not None:
+            return [result.review], False
+
+        return [], False
 
     def extract_review(
         self,
         content: str,
         url: str,
     ) -> ExtractionResult:
-        """Extract and validate a customer review."""
+        """Extract one customer review."""
 
         attempts = 0
 
@@ -457,118 +406,116 @@ If no actual review is present:
             url=url,
         )
 
-        attempts += 1
+        max_attempts = max(
+            1,
+            int(settings.extraction_max_attempts),
+        )
 
-        try:
-            raw = self.client.complete(
-                self._REVIEW_SYSTEM_PROMPT,
-                prompt,
-            )
-        except Exception as exc:
-            return ExtractionResult(
-                ok=False,
-                error=f"LLM review extraction failed: {exc}",
-                attempts=attempts,
-            )
+        last_error = "Review extraction failed."
+        last_raw: dict[str, Any] | None = None
 
-        try:
-            parsed = self._parse_json(raw)
-        except Exception as exc:
+        while attempts < max_attempts:
+            attempts += 1
+
+            if attempts == 1:
+                current_prompt = prompt
+            else:
+                current_prompt = self._build_review_retry_prompt(
+                    original_prompt=prompt,
+                    previous_output=(
+                        last_raw
+                        if last_raw is not None
+                        else {"raw": ""}
+                    ),
+                    validation_error=last_error,
+                )
+
+            try:
+                raw = self.client.complete(
+                    self._REVIEW_SYSTEM_PROMPT,
+                    current_prompt,
+                )
+            except Exception as exc:
+                last_error = (
+                    f"LLM review extraction failed: {exc}"
+                )
+
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=last_error,
+                        attempts=attempts,
+                    )
+
+                continue
+
+            try:
+                parsed = self._parse_json(raw)
+            except Exception as exc:
+                last_error = str(exc)
+                last_raw = None
+
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=(
+                            "LLM review response was not valid JSON "
+                            f"after {attempts} attempts: {exc}"
+                        ),
+                        attempts=attempts,
+                    )
+
+                continue
+
+            last_raw = parsed
+
+            if parsed.get("skip") is True:
+                return ExtractionResult(
+                    ok=False,
+                    error="No valid review found.",
+                    raw=parsed,
+                    attempts=attempts,
+                )
+
+            try:
+                review = Review.model_validate(parsed)
+
+            except Exception as exc:
+                last_error = str(exc)
+
+                if attempts >= max_attempts:
+                    return ExtractionResult(
+                        ok=False,
+                        error=(
+                            "Review extraction failed validation "
+                            f"after {attempts} attempts: {exc}"
+                        ),
+                        raw=parsed,
+                        attempts=attempts,
+                    )
+
+                continue
+
             return ExtractionResult(
-                ok=False,
-                error=(
-                    f"LLM review response was not valid JSON: {exc}"
+                ok=True,
+                review=review,
+                confidence=self._review_confidence(
+                    content,
+                    review,
                 ),
-                attempts=attempts,
-            )
-
-        if parsed.get("skip") is True:
-            return ExtractionResult(
-                ok=False,
-                error="No valid review found.",
                 raw=parsed,
                 attempts=attempts,
             )
 
-        try:
-            review = Review.model_validate(parsed)
-
-        except Exception as first_error:
-            retry_prompt = self._build_review_retry_prompt(
-                original_prompt=prompt,
-                previous_output=parsed,
-                validation_error=str(first_error),
-            )
-
-            attempts += 1
-
-            try:
-                retry_raw = self.client.complete(
-                    self._REVIEW_SYSTEM_PROMPT,
-                    retry_prompt,
-                )
-            except Exception as retry_exc:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Review validation failed and retry failed: "
-                        f"{retry_exc}"
-                    ),
-                    raw=parsed,
-                    attempts=attempts,
-                )
-
-            try:
-                retry_parsed = self._parse_json(retry_raw)
-            except Exception as retry_parse_error:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Review corrective retry returned invalid JSON: "
-                        f"{retry_parse_error}"
-                    ),
-                    raw=parsed,
-                    attempts=attempts,
-                )
-
-            if retry_parsed.get("skip") is True:
-                return ExtractionResult(
-                    ok=False,
-                    error="No valid review found after retry.",
-                    raw=retry_parsed,
-                    attempts=attempts,
-                )
-
-            try:
-                review = Review.model_validate(
-                    retry_parsed
-                )
-                parsed = retry_parsed
-
-            except Exception as retry_error:
-                return ExtractionResult(
-                    ok=False,
-                    error=(
-                        "Review extraction failed validation: "
-                        f"{retry_error}"
-                    ),
-                    raw=retry_parsed,
-                    attempts=attempts,
-                )
-
         return ExtractionResult(
-            ok=True,
-            review=review,
-            confidence=self._review_confidence(
-                content,
-                review,
-            ),
-            raw=parsed,
+            ok=False,
+            error=last_error,
+            raw=last_raw,
             attempts=attempts,
         )
 
     # ------------------------------------------------------------------
-    # Prompt construction
+    # Prompts
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -610,13 +557,6 @@ Important:
         previous_output: dict[str, Any],
         validation_error: str,
     ) -> str:
-        """
-        Corrective extraction prompt.
-
-        The phrase "previous output failed" is intentionally preserved
-        for compatibility with the existing test suite.
-        """
-
         return f"""
 The previous output failed validation.
 
@@ -694,18 +634,11 @@ Return JSON only.
         cls,
         url: str,
     ) -> bool:
-        """
-        Reject obvious informational URLs before spending an LLM call.
-        """
-
         try:
-            path = url.split(
-                "?",
-                1,
-            )[0].split(
-                "#",
-                1,
-            )[0]
+            path = (
+                url.split("?", 1)[0]
+                .split("#", 1)[0]
+            )
         except Exception:
             path = url
 
@@ -743,7 +676,6 @@ Return JSON only.
                 "LLM returned empty output."
             )
 
-        # Remove markdown code fences.
         if text.startswith("```"):
             text = re.sub(
                 r"^```(?:json)?\s*",
@@ -762,7 +694,6 @@ Return JSON only.
             parsed = json.loads(text)
 
         except json.JSONDecodeError as exc:
-            # Recover a JSON object embedded in provider commentary.
             match = re.search(
                 r"\{.*\}",
                 text,
@@ -779,7 +710,6 @@ Return JSON only.
                 parsed = json.loads(
                     match.group(0)
                 )
-
             except json.JSONDecodeError as nested_exc:
                 raise ValueError(
                     "LLM response was not valid JSON: "
@@ -792,6 +722,31 @@ Return JSON only.
             )
 
         return parsed
+
+    # ------------------------------------------------------------------
+    # Region
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _region_mismatch(
+        parsed: dict[str, Any],
+        expected_region: str | None,
+    ) -> bool:
+        if expected_region is None:
+            return False
+
+        returned_region = parsed.get("region")
+
+        if returned_region is None:
+            return False
+
+        returned_region_value = (
+            returned_region.value
+            if isinstance(returned_region, Region)
+            else str(returned_region)
+        )
+
+        return returned_region_value != expected_region
 
     # ------------------------------------------------------------------
     # Product validation
@@ -807,10 +762,8 @@ Return JSON only.
     ) -> ProductOffer:
         cleaned = dict(data)
 
-        # Source URL is authoritative.
         cleaned["url"] = url
 
-        # Pipeline execution region is authoritative.
         if expected_region:
             cleaned["region"] = expected_region
 
@@ -835,15 +788,6 @@ Return JSON only.
         content: str,
         offer: ProductOffer,
     ) -> bool:
-        """
-        Require reasonable evidence for the extracted price.
-
-        Normal positive prices can pass when the page clearly contains
-        pricing language and the relevant currency.
-
-        Very small values require exact numeric evidence.
-        """
-
         if offer.price <= 0:
             return False
 
@@ -863,9 +807,7 @@ Return JSON only.
 
         supported_tokens = currency_tokens.get(
             offer.currency.value,
-            [
-                offer.currency.value.lower()
-            ],
+            [offer.currency.value.lower()],
         )
 
         currency_present = any(
@@ -889,7 +831,6 @@ Return JSON only.
         if not pricing_language:
             return False
 
-        # Tiny values require exact source evidence.
         if offer.price < 0.5:
             price_value = f"{offer.price:g}"
 
@@ -913,12 +854,6 @@ Return JSON only.
         content: str,
         offer: ProductOffer,
     ) -> float:
-        """
-        Deterministic evidence-backed confidence.
-
-        A complete, internally consistent offer should score 1.0.
-        """
-
         text = content.lower()
 
         price_supported = (
@@ -928,22 +863,23 @@ Return JSON only.
             )
         )
 
+        currency_symbols = {
+            "USD": ["$"],
+            "EUR": ["€"],
+            "GBP": ["£"],
+            "INR": ["₹"],
+            "JPY": ["¥"],
+            "CAD": ["cad"],
+            "AUD": ["aud"],
+            "SGD": ["sgd"],
+            "BRL": ["r$"],
+        }
+
         currency_present = (
-            offer.currency.value.lower()
-            in text
+            offer.currency.value.lower() in text
             or any(
                 symbol.lower() in text
-                for symbol in {
-                    "USD": ["$"],
-                    "EUR": ["€"],
-                    "GBP": ["£"],
-                    "INR": ["₹"],
-                    "JPY": ["¥"],
-                    "CAD": ["cad"],
-                    "AUD": ["aud"],
-                    "SGD": ["sgd"],
-                    "BRL": ["r$"],
-                }.get(
+                for symbol in currency_symbols.get(
                     offer.currency.value,
                     [],
                 )
