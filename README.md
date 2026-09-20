@@ -2,187 +2,408 @@
 
 **Evidence-backed competitive intelligence across products, prices, regions, and customer reviews.**
 
-AI Competitor Research turns a target company + competitor set into a repeatable research run:
+AI Competitor Research turns a target company and competitor set into a repeatable research workflow:
 
-**Discover → region fan-out → geo-aware scrape → structured extraction → validation → PostgreSQL/SQLite → competitive insights → cited RAG → PDF/reporting.**
+**Discover → Region Fan-out → Geo-aware Scrape → Structured Extraction → Validation → Storage → Competitive Insights → Evidence-backed RAG → Reports**
 
-It is designed as an engineering system rather than a prompt demo. The pipeline includes idempotent observation keys, corrective extraction retries, explicit region enforcement, scraper fallbacks, raw evidence retention, provider circuit breaking, run-scoped SQL analysis, scheduled runs, and a production PostgreSQL + pgvector path.
-
----
-
-## What Makes This Project Interesting
-
-* **Multi-provider LLM resilience:** Supports Google/Gemini, OpenAI/GPT, Anthropic/Claude, and Groq through a configurable provider router with fallback behavior.
-
-* **Region-aware research:** Discovered URLs are evaluated across requested execution regions, with region attribution enforced during extraction.
-
-* **Evidence first:** Scraped pages are retained with a SHA-256 content hash, source URL, timestamp, and run ID.
-
-* **Idempotent observations:** `offer_key` is derived from canonical URL, canonical product, region, competitor, seller, and snapshot hour. `run_id` is metadata, so reruns do not create duplicate observations.
-
-* **Corrective structured extraction:** Schema and semantic failures feed the previous error into the next extraction attempt.
-
-* **Run isolation:** Insight queries are scoped at the SQL layer with `run_id`, preventing cross-run leakage.
-
-* **Production storage:** PostgreSQL is supported for relational data. PostgreSQL review storage can use pgvector when embeddings are configured and falls back deterministically when they are not.
-
-* **Real frontend:** React/Vite communicates with FastAPI over HTTP. The frontend never imports the Python pipeline directly.
-
-* **Security:** Protected write/LLM-expensive endpoints support an `X-API-Key` check and can be rate-limited at the deployment layer.
-
-* **Operational proof:** CI runs automated tests and the deterministic end-to-end demo on every push/PR.
+The project is designed as an engineering system rather than a simple prompt-based demo. It combines automated discovery, web scraping, structured LLM extraction, validation, evidence retention, persistent storage, cross-run analysis, review intelligence, reporting, and a React/FastAPI application boundary.
 
 ---
 
-## Architecture
+# What the Application Does
+
+The application is built to answer questions such as:
+
+- What products or commercial offerings does a company currently expose?
+- What prices and currencies are shown?
+- Which competitors offer similar products?
+- How do prices differ across regions?
+- Which products are newly observed or have changed between research runs?
+- What customer-review themes are visible in the stored evidence?
+- What evidence supports a particular competitive insight?
+- Can the research results be exported into a report?
+
+A typical research run follows this flow:
 
 ```text
-                         React Frontend
-                               │
-                              HTTPS
-                               │
-                               ▼
-                         FastAPI API
-                     API key + CORS boundary
-                               │
-                               ▼
-                          Orchestrator
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                ▼
-         Discovery          Scraping         Scheduler
-              │                │
-              │       ┌────────┼────────┐
-              │       ▼        ▼        ▼
-              │   Firecrawl  Playwright  HTTP
-              │
-              ▼
-        Region Fan-out
-              │
-              ▼
-      Structured Extraction
-              │
-        ┌───────┬───────┬───────┐
-        ▼       ▼       ▼       ▼
-      Claude   GPT    Gemini   Groq
-        │       │       │       │
-        └───────┼───────┼───────┘
-              ▼
-     Schema + semantic validation
-              │
-              ▼
-     PostgreSQL + pgvector / SQLite
-              │
-       ┌──────┼─────────────┐
-       ▼      ▼             ▼
-    Insights  RAG        Evidence
-       │      │             │
-       └──────┼─────────────┘
-              ▼
-        Reports + alerts
-
-        CI + evaluation benchmark
+Target + Competitors
+        │
+        ▼
+   URL Discovery
+        │
+        ▼
+   Region Fan-out
+        │
+        ▼
+    Web Scraping
+        │
+        ├── Firecrawl
+        ├── Playwright
+        └── HTTP fallback
+        │
+        ▼
+ Structured LLM Extraction
+        │
+        ├── Gemini
+        ├── Groq
+        ├── OpenAI
+        ├── Anthropic
+        └── Demo provider
+        │
+        ▼
+Schema + Semantic Validation
+        │
+        ▼
+Evidence + Observation Storage
+        │
+        ├── SQLite
+        └── PostgreSQL / pgvector
+        │
+        ├── Competitive Insights
+        ├── Cross-run Changes
+        ├── Review RAG
+        └── Reports / Alerts
 ```
 
----
+## Key Capabilities
 
-## Repository Layout
+### Multi-provider LLM routing
+
+The application supports multiple LLM providers through a centralized provider router:
+
+- Google Gemini
+- OpenAI / GPT
+- Anthropic / Claude
+- Groq
+- Deterministic demo provider
+
+Provider selection is controlled through `LLM_PROVIDER`.
+
+Supported modes include:
+
+| Configuration | Behavior |
+|---|---|
+| `gemini` | Gemini first |
+| `groq` | Groq first |
+| `openai` | OpenAI first |
+| `anthropic` | Anthropic first |
+| `demo` | Deterministic offline provider |
+| `auto` | Select from configured providers |
+
+When fallback providers are configured, the router can move to another configured provider when the current provider is unavailable.
+
+Provider fallback includes cooldown-based failover so a temporarily unavailable provider does not have to be selected repeatedly.
+
+Model names and provider-compatible base URLs are configurable through environment variables.
+
+The `/health` endpoint exposes:
+
+- active provider
+- resolved provider chain
+- configured model names
+- application mode
+
+It does not expose API secrets.
+
+### Region-aware Competitive Research
+
+Research runs can be executed for one or more requested regions.
+
+The system:
+
+- Discovers candidate URLs.
+- Associates research with the requested region.
+- Scrapes the discovered pages.
+- Passes regional context into structured extraction.
+- Validates the extracted region before accepting the observation.
+
+This allows the same competitor research workflow to be executed across different markets.
+
+**Current limitation**
+
+`Region.EU` is currently represented as a market-level region in the schema. A future production model could distinguish individual countries from broader markets.
+
+### Evidence-first Research
+
+The system retains scraped evidence rather than keeping only the final LLM answer.
+
+Stored evidence can include:
+
+- source URL
+- research run ID
+- timestamp
+- region
+- scraped content
+- SHA-256 content hash
+
+The extracted observation remains connected to its underlying source evidence.
+
+This makes competitive findings traceable back to the pages used during research.
+
+### Structured Product Extraction
+
+The extraction pipeline converts scraped web content into validated structured observations.
+
+The extraction process evaluates fields such as:
+
+- product name
+- price
+- currency
+- availability
+- region
+- seller
+- competitor
+- source URL
+- evidence
+- confidence
+
+The system validates both the schema and semantic requirements before accepting an observation.
+
+Informational pages, documentation, support pages, careers pages, blogs, legal pages, and other non-commercial content can be rejected instead of being incorrectly treated as commercial product offers.
+
+### Corrective Extraction
+
+Structured extraction failures can be fed back into a subsequent extraction attempt.
+
+The previous extraction error can be included in the next prompt so the model has additional context about what failed.
+
+Provider quota/rate-limit and provider-unavailable errors are handled separately so the system does not unnecessarily repeat requests when an external provider is already refusing requests.
+
+### Idempotent Observations
+
+Observation identity is designed to prevent duplicate records when the same research is repeated.
+
+The observation key is derived from normalized identifying attributes such as:
+
+- canonical URL
+- canonical product
+- region
+- competitor
+- seller
+- snapshot hour
+
+The `run_id` is retained as metadata rather than being used as the identity of the observation.
+
+This means rerunning research does not automatically create duplicate observations for the same underlying observation.
+
+### Competitive Insights
+
+Stored observations can be analyzed to identify competitive signals such as:
+
+- price movements
+- competitive undercuts
+- newly observed products
+- regional differences
+- changes between research runs
+
+Cross-run analysis is scoped by research run and target so results from unrelated research runs are not mixed together.
+
+The API exposes cross-run change information through:
 
 ```text
-app/
-├── analysis/            Price, identity, sentiment and competitive insights
-├── llm/                 Provider routing + structured extraction
-├── scrapers/            Firecrawl / Playwright / HTTP / demo chain
-├── storage/             Relational offers + review vector storage
-├── output/              PDF reports and alerts
-├── api.py               FastAPI application entry point
-├── config.py            Application configuration
-├── discovery.py         Target/competitor discovery
-├── orchestrator.py      End-to-end research pipeline
-├── scheduler.py         Scheduled research execution
-└── schemas.py           API/data schemas
-
-frontend/                React/Vite product UI
-eval/                    Human-labelled extraction benchmark scaffold
-scripts/                 Demo, live smoke, benchmark, report and ops utilities
-tests/                   Unit + failure-mode + production-readiness tests
-deploy/                  Deployment notes
-.github/workflows/       GitHub Actions CI
+GET /insights/changes
 ```
+
+### Review Intelligence and RAG
+
+The application includes a review-intelligence layer for customer feedback.
+
+Stored reviews can be retrieved using scoped search and used as evidence for review-based questions.
+
+The system is designed to avoid presenting unrelated reviews as evidence.
+
+If the retrieval layer does not find sufficiently relevant evidence, the application can return a no-relevant-evidence response instead of fabricating an answer.
+
+RAG sources can include metadata such as:
+
+- product
+- region
+- source URL
+- rating
+- research run ID
+
+This makes review-based answers traceable to stored evidence.
+
+### Storage
+
+The application supports multiple storage configurations.
+
+**SQLite**
+
+SQLite provides the lightweight local/development storage path.
+
+It is suitable for:
+
+- local development
+- deterministic demonstrations
+- lightweight deployments
+- testing
+
+**PostgreSQL**
+
+PostgreSQL is supported as the relational production storage path.
+
+The application can store relational competitive observations and related research data in PostgreSQL.
+
+**pgvector**
+
+The PostgreSQL review-storage path can use pgvector when vector embeddings are configured.
+
+When embeddings are unavailable, the application has deterministic fallback behavior rather than silently producing unsupported results.
+
+### Scraping Architecture
+
+The application supports multiple scraping mechanisms:
+
+```text
+Firecrawl
+    ↓
+Playwright
+    ↓
+HTTP
+    ↓
+Demo / deterministic path
+```
+
+This provides multiple ways to obtain page content depending on the target website and execution environment.
+
+**Important real-world limitation**
+
+Live scraping depends on external websites and scraping providers.
+
+A real website may:
+
+- change its markup
+- block automated clients
+- require authentication
+- return different content by geography
+- impose rate limits
+- become temporarily unavailable
+
+Firecrawl's API rate limits are also external to the application.
+
+Therefore, successful scraping of every discovered URL cannot be guaranteed.
+
+### Discovery
+
+The discovery system identifies candidate URLs for competitive research.
+
+It can use:
+
+- homepage discovery
+- commercial/intelligence path detection
+- sitemap traversal
+- Firecrawl map results
+- candidate scoring and ranking
+- duplicate/canonical URL filtering
+
+The discovery stage intentionally prioritizes pages that are more likely to contain commercial intelligence.
+
+Non-public and low-value paths can be filtered before extraction.
+
+The final candidate set is bounded to prevent an unrestricted discovery result from producing an unbounded number of downstream scraping and LLM requests.
+
+### Frontend
+
+The project includes a React/Vite frontend.
+
+The frontend communicates with the FastAPI backend through HTTP and does not directly import or execute the Python research pipeline.
+
+The UI is structured as an intelligence workspace rather than a generic administration panel.
+
+**Overview**
+
+Provides visibility into:
+
+- latest signals
+- KPI summaries
+- research runs
+- live events
+- pipeline health
+
+**Research**
+
+Provides guided configuration for:
+
+- target company
+- target website
+- competitors
+- region
+- research focus
+- research execution
+
+**Evidence**
+
+Provides searchable and filterable structured observations with source/evidence information.
+
+**Signals**
+
+Displays competitive signals such as:
+
+- price movements
+- competitive undercuts
+- regional snapshots
+- cross-run changes
+
+**Ask AI**
+
+Provides review-based RAG interaction using stored review evidence.
+
+**Reports**
+
+Provides access to generated PDF reports.
+
+### Reports and Alerts
+
+The project includes report generation and alerting components.
+
+Research results can be converted into PDF reports.
+
+The output layer also contains alerting functionality for supported notification channels.
+
+Reports and other generated artifacts currently use the local filesystem.
+
+**Production limitation**
+
+For a horizontally scaled deployment, generated reports, checkpoints, and other files should be moved to durable object storage.
+
+### Scheduled Research
+
+The application contains scheduling support for recurring research execution.
+
+The scheduler can be configured through the application/API rather than requiring the research logic to be manually executed every time.
+
+**Production limitation**
+
+The current scheduler and research job registry are designed around a single API process.
+
+A horizontally scaled production deployment should move job state and scheduling responsibilities to durable/distributed infrastructure.
 
 ---
 
-# Quick Start
+# API
 
-## 1. Create a virtual environment
+The backend is implemented using FastAPI.
 
-### Windows PowerShell
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-If PowerShell blocks activation, you can run the project using the virtual-environment Python directly:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-### macOS / Linux
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
----
-
-## 2. Install Python dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## 3. Run the automated tests
-
-```bash
-python -m pytest -q
-```
-
-The test suite covers core pipeline behavior, storage, extraction, API behavior, RAG retrieval, failure modes, and production-readiness checks.
-
----
-
-# Run the API
-
-The FastAPI application entry point is:
+Application entry point:
 
 ```text
 app.api:app
 ```
 
-Start it with:
+Run locally with:
 
 ```bash
 python -m uvicorn app.api:app --reload
 ```
 
-Or:
-
-```bash
-uvicorn app.api:app --reload
-```
-
-The API will be available at:
+The local API is normally available at:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-Swagger/OpenAPI documentation:
+Swagger/OpenAPI:
 
 ```text
 http://127.0.0.1:8000/docs
@@ -200,65 +421,28 @@ Health endpoint:
 http://127.0.0.1:8000/health
 ```
 
-> **Important:** The project uses `app.api:app`. There is no `app.main` module.
+> There is no `app.main` module. The application entry point is `app.api:app`.
 
----
+## API Security
 
-# Run the React Frontend
+Protected write and LLM-expensive endpoints can use an `X-API-Key` check.
 
-Open a second terminal.
+API access requirements can be controlled through environment configuration.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+The frontend does not contain provider secrets.
 
-The frontend normally runs at:
+API keys belong in:
 
-```text
-http://localhost:5173
-```
+- `.env` during local development
+- deployment environment/secrets in production
 
-The frontend communicates with the FastAPI backend through HTTP.
+**Never:**
 
-By default, the frontend expects:
-
-```text
-http://localhost:8000
-```
-
-If the API is hosted elsewhere, configure:
-
-```text
-VITE_API_URL
-```
-
-For example:
-
-```bash
-VITE_API_URL=http://localhost:8000
-```
-
----
-
-# Deterministic Demo
-
-The repository includes an offline/demo path that does not require live scraping or paid LLM credentials.
-
-From the project root:
-
-```bash
-python research.py
-```
-
-To generate a report from the resulting run:
-
-```bash
-python scripts/generate_report.py
-```
-
-This path is intended for local evaluation, development, CI, and demonstrations without external credentials.
+- hard-code API keys into Python files
+- commit `.env`
+- place provider secrets in frontend source code
+- publish secrets in screenshots
+- publish secrets in documentation
 
 ---
 
@@ -278,8 +462,6 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-Then configure the credentials and settings required for the execution mode you want.
-
 Typical integrations include:
 
 ```text
@@ -293,59 +475,53 @@ API_KEY_REQUIRED
 DATABASE_URL
 ```
 
-The exact supported variables are documented in `.env.example`.
+The complete list of supported variables is documented in:
 
-**Never commit `.env` or real API keys to Git.**
+```text
+.env.example
+```
+
+The application reads provider credentials from environment configuration rather than hard-coding them into the application source.
 
 ---
 
-# LLM Provider Routing
+# Demo Mode
 
-The provider router supports:
+The repository includes a deterministic offline/demo path.
 
-* Google/Gemini
-* OpenAI/GPT
-* Anthropic/Claude
-* Groq
-* Deterministic demo mode
+The demo path does not require:
 
-Provider selection can be controlled through:
+- live scraping
+- external LLM credentials
+- production provider access
 
-```text
-LLM_PROVIDER
+Run the deterministic research path with:
+
+```bash
+python research.py
 ```
 
-Supported modes include:
+Generate a report from the resulting run with:
 
-| Configuration | Behavior                         |
-| ------------- | -------------------------------- |
-| `gemini`      | Gemini first                     |
-| `groq`        | Groq first                       |
-| `openai`      | OpenAI first                     |
-| `anthropic`   | Anthropic first                  |
-| `demo`        | Deterministic offline provider   |
-| `auto`        | Select from configured providers |
+```bash
+python scripts/generate_report.py
+```
 
-When fallback providers are configured, the router can move to another available provider when the primary provider is unavailable.
+The demo path is intended for:
 
-Model names and provider-compatible base URLs are environment-configurable.
+- development
+- CI
+- local evaluation
+- demonstrations
+- environments without external credentials
 
-The `/health` endpoint exposes the active provider, resolved chain, and non-secret model information.
-
-### API key security
-
-API keys must be stored in `.env` locally or in deployment secrets.
-
-**Never:**
-
-* hard-code API keys into Python files
-* commit `.env`
-* place secrets in frontend source code
-* publish secrets in screenshots or documentation
+Demo mode is separate from live provider execution.
 
 ---
 
 # Live Smoke Test
+
+The repository includes a live smoke-test workflow for real websites and external providers.
 
 ## 1. Create the configuration
 
@@ -365,8 +541,8 @@ config/live_smoke.json
 
 Add:
 
-* one target company
-* two real competitors
+- one target company
+- two real competitors
 
 Start with:
 
@@ -378,7 +554,7 @@ Start with:
 
 and no proxy.
 
-After a successful US run, additional regions can be tested.
+Additional regions can be tested after the initial run.
 
 ## 3. Configure credentials
 
@@ -396,7 +572,7 @@ and at least one real LLM provider key.
 python scripts/run_live_smoke.py --config config/live_smoke.json
 ```
 
-Artifacts are written to:
+Artifacts are written under:
 
 ```text
 data/live_runs/<run_id>/
@@ -413,21 +589,32 @@ The manifest contains run metrics and evidence metadata.
 
 ## 5. Generate a report
 
-Use the resulting run ID:
-
 ```bash
 python scripts/generate_report.py --run-id <run_id>
 ```
 
-**Do not put API keys in the repository.**
+**Do not place API keys in the repository.**
 
 ---
 
 # Extraction Evaluation Benchmark
 
-The benchmark is intentionally based on human-labelled real pages rather than synthetic or self-reported accuracy.
+The repository includes infrastructure for evaluating extraction quality against human-labelled data.
 
-## 1. Create the ground-truth file
+The benchmark is intentionally based on real pages and manually labelled ground truth rather than synthetic or self-reported accuracy.
+
+## Fields evaluated
+
+The benchmark can evaluate:
+
+- `product_name`
+- `price`
+- `currency`
+- `availability`
+- `region`
+- `seller`
+
+## Create the ground truth
 
 Copy:
 
@@ -441,26 +628,15 @@ to:
 eval/ground_truth.json
 ```
 
-## 2. Capture real product pages
-
-Add approximately 15–20 real product pages to:
+Add approximately 15–20 real product pages under:
 
 ```text
 eval/pages/
 ```
 
-## 3. Label the fields
+Label the expected fields.
 
-The benchmark evaluates:
-
-* `product_name`
-* `price`
-* `currency`
-* `availability`
-* `region`
-* `seller`
-
-## 4. Run the benchmark
+## Run the benchmark
 
 ```bash
 python scripts/evaluate_extraction.py \
@@ -472,137 +648,225 @@ The output reports field-level and macro accuracy for configured providers.
 
 Providers that are not configured are explicitly skipped.
 
-**Do not publish benchmark numbers until the human-labelled benchmark has actually been completed.**
+**Important**
+
+No benchmark percentage should be presented as a project result until the human-labelled benchmark has actually been completed.
 
 ---
 
-# Frontend UX
+# CI and Automated Testing
 
-The frontend is designed as an intelligence workspace rather than a generic administration panel.
+GitHub Actions runs the automated project checks, including:
 
-The main areas are:
+- Python dependency installation
+- Python tests
+- production-readiness checks
+- frontend dependency installation
+- frontend production build
 
-### Overview
-
-Latest signals, KPI summaries, run history, live events, and pipeline health.
-
-### Research
-
-Guided research configuration with region selection and run execution.
-
-### Evidence
-
-Searchable and filterable observations with source/evidence details.
-
-### Signals
-
-Competitive undercuts, price movements, regional snapshots, and cross-run changes.
-
-### Ask AI
-
-Review-based RAG with source citations and scoped retrieval.
-
-### Reports
-
-Generated PDF report library.
-
-The UI communicates with FastAPI through HTTP and does not directly import or execute the Python pipeline.
-
----
-
-# RAG and Evidence
-
-The review intelligence layer uses scoped retrieval to answer questions about customer feedback.
-
-The system is designed to avoid presenting arbitrary reviews as evidence.
-
-If retrieved reviews do not contain sufficient relevance to the question, the system returns an honest no-relevant-evidence response instead of inventing an answer.
-
-Sources returned by the RAG endpoint include available evidence metadata such as:
-
-* product
-* region
-* source URL
-* rating
-* run ID
-
-This makes customer-insight answers traceable to stored review evidence.
-
----
-
-# Cross-Run Intelligence
-
-```text
-GET /insights/changes
-```
-
-compares recent stored research runs for the same target.
-
-It can identify meaningful changes such as:
-
-* price movements
-* newly observed products
-* competitive observations that changed between runs
-
-This makes repeated scheduled research useful rather than treating every run as an isolated snapshot.
-
----
-
-# CI
-
-GitHub Actions runs:
-
-* Python dependency installation
-* `pytest -q`
-* production-readiness checks
-* frontend dependency installation
-* frontend production build
-
-Live smoke tests and human-labelled extraction benchmarks remain separate because they require external credentials, real websites, and manually labelled data.
-
----
-
-# Important Limitations
-
-These are real engineering boundaries and should not be hidden:
-
-* Real scraping can fail because websites change markup, block automated clients, require authentication, or vary content by geography.
-
-* Firecrawl API-side location control is distinct from client-side proxy routing.
-
-* `Region.EU` is currently treated as a market in the schema. A future production model could separate market from individual geo-country.
-
-* Product identity currently uses deterministic normalized-name identity. SKU/GTIN/fuzzy/LLM confirmation remain possible extension points.
-
-* The in-process research job registry is designed for a single API process. A multi-instance deployment should move job state to durable infrastructure.
-
-* PostgreSQL provides the production relational path, while reports, checkpoints, and files currently use the local filesystem. A horizontally scaled deployment should move these artifacts to durable object storage.
-
-* Live extraction accuracy must be measured using `eval/ground_truth.json` before benchmark numbers are presented as project results.
-
----
-
-# Current Verification Status
-
-The repository includes automated tests for the core application.
-
-The local test suite should be run with:
+Run the local test suite with:
 
 ```bash
 python -m pytest -q
 ```
 
-A clean test run is required before pushing changes.
+The test suite covers areas including:
 
-The following production-evidence items require real-world verification and should not be claimed unless completed:
+- core pipeline behavior
+- storage
+- structured extraction
+- API behavior
+- RAG retrieval
+- failure modes
+- production-readiness behavior
 
-* successful real-internet research run
-* real provider switching
-* human-labelled extraction benchmark
-* production deployment
-* frontend screenshots
-* demonstration video
-* dated live metrics
+Live smoke tests and human-labelled extraction benchmarks remain separate because they require:
+
+- external credentials
+- real websites
+- manually labelled ground truth
+
+---
+
+# Repository Structure
+
+```text
+app/
+├── analysis/            Price, identity, sentiment and competitive insights
+├── llm/                 Provider routing and structured extraction
+├── scrapers/            Firecrawl / Playwright / HTTP / demo chain
+├── storage/             Relational offers and review/vector storage
+├── output/              PDF reports and alerts
+├── api.py               FastAPI application entry point
+├── config.py            Application configuration
+├── discovery.py         Target/competitor discovery
+├── orchestrator.py      End-to-end research pipeline
+├── scheduler.py         Scheduled research execution
+└── schemas.py           API/data schemas
+
+frontend/                React/Vite product UI
+eval/                    Human-labelled extraction benchmark scaffold
+scripts/                 Demo, live smoke, benchmark, report and operations utilities
+tests/                   Unit, failure-mode and production-readiness tests
+deploy/                  Deployment notes
+.github/workflows/       GitHub Actions CI
+```
+
+---
+
+# Architecture
+
+```text
+                         React Frontend
+                              │
+                             HTTPS
+                              │
+                              ▼
+                         FastAPI API
+                    API key + CORS boundary
+                              │
+                              ▼
+                          Orchestrator
+                              │
+             ┌────────────────┼────────────────┐
+             ▼                ▼                ▼
+        Discovery          Scraping         Scheduler
+             │                │
+             │        ┌───────┼────────┐
+             │        ▼       ▼        ▼
+             │    Firecrawl Playwright HTTP
+             │
+             ▼
+        Region Fan-out
+             │
+             ▼
+    Structured Extraction
+             │
+      ┌──────┼───────────────┐
+      ▼      ▼       ▼       ▼
+    Gemini  Groq   OpenAI  Anthropic
+      │      │       │       │
+      └──────┼───────┼───────┘
+             ▼
+    Schema + Semantic Validation
+             │
+             ▼
+       PostgreSQL / SQLite
+             │
+       ┌─────┼─────────────┐
+       ▼     ▼             ▼
+    Insights RAG        Evidence
+       │     │             │
+       └─────┼─────────────┘
+             ▼
+       Reports + Alerts
+
+             │
+             ▼
+        CI + Evaluation
+```
+
+---
+
+# Important Engineering Limitations
+
+These are real system boundaries and are intentionally documented.
+
+**Live websites**
+
+Real scraping can fail because websites can:
+
+- change markup
+- block automated clients
+- require authentication
+- vary content by geography
+- impose provider or API rate limits
+
+**Firecrawl**
+
+Firecrawl API-side location control is distinct from client-side proxy routing.
+
+Firecrawl availability and rate limits are external dependencies.
+
+**Region model**
+
+`Region.EU` is currently treated as a market-level region in the schema.
+
+A future production model could separate:
+
+- Market
+- Country
+- Locale
+
+more explicitly.
+
+**Product identity**
+
+Product identity currently uses deterministic normalized-name identity.
+
+SKU/GTIN matching, fuzzy matching, and additional LLM confirmation remain possible future extensions.
+
+**Job state**
+
+The in-process research job registry is designed for a single API process.
+
+A multi-instance deployment should move job state to durable shared infrastructure.
+
+**Generated files**
+
+PostgreSQL provides the production relational path, while reports, checkpoints, and generated files currently use the local filesystem.
+
+A horizontally scaled deployment should move generated artifacts to durable object storage.
+
+**Extraction accuracy**
+
+Live extraction accuracy must be measured using:
+
+```text
+eval/ground_truth.json
+```
+
+before benchmark numbers are presented as project results.
+
+**External provider quotas**
+
+Live LLM execution depends on the configured provider's current quota, rate limits, billing state, and model availability.
+
+A provider can return a rate-limit or quota error even when the application itself is functioning correctly.
+
+The provider router can attempt configured fallback providers when available.
+
+---
+
+# Current Verification Status
+
+The repository contains automated tests for the core application.
+
+Run:
+
+```bash
+python -m pytest -q
+```
+
+A clean test run should be completed before pushing changes.
+
+The following items require real-world verification and should not be claimed as completed unless they have actually been performed:
+
+- [ ] Successful real-internet research run with saved metrics/evidence
+- [ ] Provider switching verified with real Gemini credentials
+- [ ] Provider switching verified with real OpenAI credentials
+- [ ] Provider switching verified with real Anthropic credentials
+- [ ] Groq execution verified with a real Groq API key
+- [ ] 15–20 page human-labelled extraction benchmark completed
+- [ ] Real frontend screenshots captured
+- [ ] 60–90 second demonstration video recorded
+- [ ] README updated with dated live-run metrics
+- [ ] README updated with real benchmark results
+- [ ] Frontend + API deployed using production secrets
+
+Unchecked items are intentionally human-verifiable tasks.
+
+They require real credentials, real websites, or human-labelled ground truth and therefore should not be fabricated by the codebase or documentation.
 
 ---
 
@@ -610,79 +874,121 @@ The following production-evidence items require real-world verification and shou
 
 ### Engineering
 
-* [x] Core research pipeline
-* [x] Structured extraction
-* [x] Validation and corrective retries
-* [x] Scraper fallback chain
-* [x] Region-aware execution
-* [x] Evidence retention
-* [x] Run scoping
-* [x] Idempotent observations
-* [x] FastAPI application boundary
-* [x] React frontend using HTTP API
-* [x] RAG review retrieval
-* [x] Cross-run change detection
-* [x] PostgreSQL relational backend
-* [x] PostgreSQL + pgvector review path
-* [x] API-key protection
-* [x] CI
-* [x] Deterministic offline/demo path
+- [x] Core research pipeline
+- [x] Target and competitor discovery
+- [x] Structured extraction
+- [x] Schema and semantic validation
+- [x] Corrective extraction handling
+- [x] Scraper fallback chain
+- [x] Region-aware execution
+- [x] Evidence retention
+- [x] Run scoping
+- [x] Idempotent observations
+- [x] FastAPI application boundary
+- [x] React frontend using HTTP API
+- [x] Review RAG retrieval
+- [x] Cross-run change detection
+- [x] PostgreSQL relational backend
+- [x] PostgreSQL + pgvector review path
+- [x] API-key protection
+- [x] CI
+- [x] Deterministic offline/demo path
+- [x] Multi-provider LLM routing
+- [x] Provider fallback and cooldown-based failover
+- [x] PDF report generation
+- [x] Alerting components
+- [x] Scheduled research support
 
 ### Real-world verification
 
-* [ ] Successful real-internet run with saved metrics/evidence
-* [ ] Provider switching verified with real Google/Gemini credentials
-* [ ] Provider switching verified with real OpenAI/GPT credentials
-* [ ] Provider switching verified with real Anthropic/Claude credentials
-* [ ] Groq execution verified with a real Groq API key
-* [ ] 15–20 page human-labelled extraction benchmark completed
-* [ ] Real frontend screenshots captured
-* [ ] 60–90 second demo video recorded
-* [ ] README updated with dated live-run metrics
-* [ ] README updated with real benchmark results
-* [ ] Frontend + API deployed using production secrets
-
-Unchecked items are intentionally human-verifiable tasks. They require real credentials, real websites, or human-labelled ground truth and therefore must not be fabricated by the codebase.
+- [ ] Successful real-internet research run with saved metrics/evidence
+- [ ] Real provider switching verified across configured providers
+- [ ] Human-labelled extraction benchmark completed
+- [ ] Real frontend screenshots captured
+- [ ] 60–90 second demo video recorded
+- [ ] README updated with dated live-run metrics
+- [ ] README updated with real benchmark results
 
 ---
 
 # Recommended Verification Sequence
 
-For a fresh clone, use this order:
+For a fresh clone:
 
 ```bash
 # 1. Create environment
 python -m venv .venv
 
-# 2. Activate environment
-# Windows:
+# Windows
 .\.venv\Scripts\Activate.ps1
 
-# macOS/Linux:
+# macOS/Linux
 source .venv/bin/activate
+```
 
-# 3. Install dependencies
+Then:
+
+```bash
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 4. Run tests
+# 3. Run tests
 python -m pytest -q
 
-# 5. Start API
+# 4. Start API
 python -m uvicorn app.api:app --reload
+```
 
-# 6. Open API documentation
-# http://127.0.0.1:8000/docs
+Open:
 
-# 7. Start frontend in a second terminal
+```text
+http://127.0.0.1:8000/docs
+```
+
+Then start the frontend in a second terminal:
+
+```bash
 cd frontend
 npm install
 npm run dev
-
-# 8. Open frontend
-# http://localhost:5173
 ```
 
-For production-style testing, configure `.env`, PostgreSQL/pgvector, real provider credentials, and the live smoke-test configuration separately.
+Open:
+
+```text
+http://localhost:5173
+```
+
+For production-style testing, configure:
+
+- `.env`
+- PostgreSQL/pgvector where required
+- real provider credentials
+- Firecrawl credentials
+- live smoke-test configuration
+
+separately from the deterministic demo path.
+
+---
+
+# Security Notes
+
+Never commit:
+
+- `.env`
+- real API keys
+- provider secrets
+- deployment secrets
+
+Use:
+
+```text
+.env.example
+```
+
+for variable names and placeholders only.
+
+For deployment, configure secrets through the deployment platform's environment/secrets mechanism.
 
 ---
 
