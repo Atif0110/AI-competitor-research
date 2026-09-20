@@ -40,6 +40,7 @@ def _warn_if_malformed(name: str, key: Optional[str]) -> None:
         return
 
     prefix = _KEY_PREFIX.get(name)
+
     if prefix and not key.startswith(prefix):
         logger.warning(
             "%s_API_KEY is set but doesn't look like a valid %s key "
@@ -161,12 +162,13 @@ class _GeminiClient:
             if message.role != "system"
         )
 
+        # Gemini 3.6 configuration:
+        # Do not send temperature/top_p/top_k.
         response = client.models.generate_content(
             model=settings.gemini_model,
             contents=user,
             config=types.GenerateContentConfig(
                 system_instruction=system or None,
-                temperature=0,
             ),
         )
 
@@ -478,7 +480,8 @@ def _norm_avail(value: str) -> str:
 
     return (
         value
-        if value in {
+        if value
+        in {
             "in_stock",
             "out_of_stock",
             "preorder",
