@@ -72,7 +72,6 @@ def _research_rate_limit(request: Request) -> None:
     """Small single-process guard against accidental runaway scraping/LLM spend.
     Put a real distributed limiter in front of multi-instance deployments.
     """
-    from fastapi import Request
     ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
     with _rate_lock:
@@ -127,7 +126,9 @@ def create_app():
     def health():
         client = _pipeline.extractor.client
         return {
-            "status": "ok", "mode": "demo" if settings.demo_mode else "live",
+            "status": "ok",
+            "mode": "demo" if settings.demo_mode else "live",
+            "demo_mode": settings.demo_mode,
             "storage_backend": "postgresql" if _store._postgres else "sqlite",
             "offers": _store.count(), "review_backend": _reviews.backend,
             "scheduler": settings.scheduler_autostart,
@@ -138,6 +139,7 @@ def create_app():
                 "openai": settings.openai_model if settings.openai_api_key else None,
                 "anthropic": settings.anthropic_model if settings.anthropic_api_key else None,
                 "groq": settings.groq_model if settings.groq_api_key else None,
+                "gemini": settings.gemini_model if settings.gemini_api_key else None,
             },
         }
 
