@@ -80,7 +80,12 @@ def _resolve_provider_order() -> List[str]:
 
         order = [forced] if configured.get(forced, False) else [forced]
 
-        for name in ("gemini", "groq", "openai", "anthropic"):
+        # Preserve the existing fallback preference used by the project:
+        # Anthropic -> OpenAI -> Groq. Gemini is preferred when explicitly
+        # selected, but remains available as a configured fallback otherwise.
+        fallback_order = ("anthropic", "openai", "groq", "gemini")
+
+        for name in fallback_order:
             if name != forced and configured[name]:
                 order.append(name)
 
