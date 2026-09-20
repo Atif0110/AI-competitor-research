@@ -23,16 +23,17 @@ class ExtractionResult:
 
 class StructuredExtractor:
     """
-    Extract structured product offers and reviews from scraped content.
+    Structured extraction for product offers and reviews.
 
-    The extractor:
-    - rejects obvious informational/non-commercial URLs
-    - requires evidence for prices
-    - validates structured output with Pydantic
-    - retries malformed/invalid LLM responses
-    - tracks extraction attempts
-    - tracks region mismatches
-    - preserves the expected-region pipeline contract
+    Responsibilities:
+    - reject obvious non-commercial pages
+    - extract structured product offers
+    - validate LLM output with Pydantic
+    - retry malformed/invalid outputs
+    - track extraction attempts
+    - track region mismatches
+    - require evidence for extracted prices
+    - preserve compatibility with the existing pipeline
     """
 
     _NON_OFFER_PATH_SEGMENTS = {
@@ -158,6 +159,7 @@ If no actual review is present:
         else:
             effective_region_value = None
 
+        # Reject obvious informational pages before spending an LLM call.
         if self._is_non_offer_url(url):
             return ExtractionResult(
                 ok=False,
@@ -186,22 +188,12 @@ If no actual review is present:
         last_raw: dict[str, Any] | None = None
         last_error = "Extraction failed."
 
-        # --------------------------------------------------------------
-        # Retry loop
-        #
-        # Important: malformed JSON must consume all configured
-        # extraction attempts. The test suite expects 3 when
-        # EXTRACTION_MAX_ATTEMPTS=3.
-        # --------------------------------------------------------------
-
         while attempts < max_attempts:
             attempts += 1
 
             if attempts == 1:
-                current_system = self._SYSTEM_PROMPT
                 current_prompt = prompt
             else:
-                current_system = self._SYSTEM_PROMPT
                 current_prompt = self._build_retry_prompt(
                     original_prompt=prompt,
                     previous_output=(
@@ -214,7 +206,7 @@ If no actual review is present:
 
             try:
                 raw_response = self.client.complete(
-                    current_system,
+                    self._SYSTEM_PROMPT,
                     current_prompt,
                 )
             except Exception as exc:
@@ -257,18 +249,10 @@ If no actual review is present:
                     attempts=attempts,
                 )
 
-            # ----------------------------------------------------------
-            # Region mismatch
-            # ----------------------------------------------------------
-
             region_mismatch = self._region_mismatch(
                 parsed,
                 effective_region_value,
             )
-
-            # ----------------------------------------------------------
-            # Pydantic validation
-            # ----------------------------------------------------------
 
             try:
                 offer = self._validate_offer(
@@ -277,7 +261,6 @@ If no actual review is present:
                     expected_region=effective_region_value,
                     run_id=run_id,
                 )
-
             except Exception as exc:
                 last_error = str(exc)
 
@@ -294,10 +277,6 @@ If no actual review is present:
                     )
 
                 continue
-
-            # ----------------------------------------------------------
-            # Evidence guard
-            # ----------------------------------------------------------
 
             if not self._price_is_evidenced(
                 content,
@@ -318,10 +297,6 @@ If no actual review is present:
                     )
 
                 continue
-
-            # ----------------------------------------------------------
-            # Confidence
-            # ----------------------------------------------------------
 
             confidence = self._confidence(
                 content,
@@ -351,7 +326,7 @@ If no actual review is present:
         )
 
     # ------------------------------------------------------------------
-    # Review extraction compatibility API
+    # Review extraction
     # ------------------------------------------------------------------
 
     def extract_reviews(
@@ -365,14 +340,10 @@ If no actual review is present:
         product_name: str | None = None,
     ) -> tuple[list[Review], bool]:
         """
-        Compatibility API expected by Pipeline.
+        Pipeline-compatible review extraction API.
 
         Returns:
-            (reviews, fallback_used)
-
-        The current review extractor produces at most one structured
-        review from a page. The second return value indicates whether
-        the fallback path was used.
+            reviews, fallback_used
         """
 
         result = self.extract_review(
@@ -380,17 +351,54 @@ If no actual review is present:
             url,
         )
 
-        if result.ok and result.review is not None:
-            return [result.review], False
+        if not result.ok or result.review is None:
+            return [], False
 
-        return [], False
+        review = result.review
+        updates: dict[str, Any] = {}
+
+        # Only add fields if they actually exist in the Review schema.
+        fields = getattr(
+            review,
+            "model_fields",
+            {},
+        )
+
+        if competitor is not None and "competitor" in fields:
+            updates["competitor"] = competitor
+
+        if run_id is not None and "run_id" in fields:
+            updates["run_id"] = run_id
+
+        if product_name is not None and "product_name" in fields:
+            updates["product_name"] = product_name
+
+        if expected_region is not None and "region" in fields:
+            region_value = (
+                expected_region.value
+                if isinstance(expected_region, Region)
+                else str(expected_region)
+            )
+            updates["region"] = region_value
+
+        if updates:
+            review = review.model_copy(
+                update=updates,
+            )
+
+        return [review], False
 
     def extract_review(
         self,
         content: str,
         url: str,
     ) -> ExtractionResult:
-        """Extract one customer review."""
+        """
+        Extract a single review.
+
+        The demo provider is intentionally allowed to return the
+        deterministic review fixture used by the existing pipeline.
+        """
 
         attempts = 0
 
@@ -478,8 +486,9 @@ If no actual review is present:
                 )
 
             try:
-                review = Review.model_validate(parsed)
-
+                review = Review.model_validate(
+                    parsed,
+                )
             except Exception as exc:
                 last_error = str(exc)
 
@@ -515,7 +524,7 @@ If no actual review is present:
         )
 
     # ------------------------------------------------------------------
-    # Prompts
+    # Prompt construction
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -570,6 +579,7 @@ Correct the extraction using ONLY evidence in the source.
 
 Do not invent missing values.
 Do not create a placeholder price.
+
 If the page does not contain a valid commercial offer, return:
 {{"skip": true}}
 
@@ -692,7 +702,6 @@ Return JSON only.
 
         try:
             parsed = json.loads(text)
-
         except json.JSONDecodeError as exc:
             match = re.search(
                 r"\{.*\}",
@@ -708,7 +717,7 @@ Return JSON only.
 
             try:
                 parsed = json.loads(
-                    match.group(0)
+                    match.group(0),
                 )
             except json.JSONDecodeError as nested_exc:
                 raise ValueError(
@@ -724,7 +733,7 @@ Return JSON only.
         return parsed
 
     # ------------------------------------------------------------------
-    # Region
+    # Region handling
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -746,7 +755,10 @@ Return JSON only.
             else str(returned_region)
         )
 
-        return returned_region_value != expected_region
+        return (
+            returned_region_value
+            != expected_region
+        )
 
     # ------------------------------------------------------------------
     # Product validation
@@ -762,8 +774,10 @@ Return JSON only.
     ) -> ProductOffer:
         cleaned = dict(data)
 
+        # The scraper URL is authoritative.
         cleaned["url"] = url
 
+        # The execution region is authoritative.
         if expected_region:
             cleaned["region"] = expected_region
 
@@ -776,7 +790,7 @@ Return JSON only.
         )
 
         return ProductOffer.model_validate(
-            cleaned
+            cleaned,
         )
 
     # ------------------------------------------------------------------
@@ -831,6 +845,7 @@ Return JSON only.
         if not pricing_language:
             return False
 
+        # Suspiciously tiny prices require exact evidence.
         if offer.price < 0.5:
             price_value = f"{offer.price:g}"
 
@@ -846,7 +861,7 @@ Return JSON only.
         return True
 
     # ------------------------------------------------------------------
-    # Confidence
+    # Offer confidence
     # ------------------------------------------------------------------
 
     @staticmethod
