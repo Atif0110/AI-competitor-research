@@ -4,15 +4,17 @@ Discovery supports both ecommerce/product sites and SaaS/software companies.
 
 Flow:
     competitor site -> Firecrawl /map OR sitemap chain
-                    -> retain intelligence-relevant URLs
+                    -> remove obvious non-research pages
                     -> canonicalize + dedupe
                     -> optional focus-product filtering in the pipeline
 
+The discovery layer is intentionally broader than product extraction.
+Discovery finds candidate intelligence pages; the LLM extractor decides
+whether a scraped page actually contains a valid commercial observation.
+
 Sitemap chain:
     robots.txt -> Sitemap declarations -> sitemap index -> child sitemaps
-                 -> relevant URLs
-
-The discovery layer deliberately does not scrape arbitrary website URLs.
+                 -> candidate URLs
 """
 
 from __future__ import annotations
@@ -28,36 +30,62 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-# URL path segments that commonly contain competitive-intelligence material.
-#
-# This intentionally covers:
-# - ecommerce/product catalogs
-# - SaaS/software products
-# - pricing and plans
-# - features/capabilities
-# - enterprise/solutions/use cases
-# - platform pages
-# - apps
-# - reviews/comparisons
-#
-# Blog/news/legal/careers/integration URLs are intentionally excluded unless
-# they also contain one of the relevant intelligence segments below.
-_RELEVANT_PATH_PATTERNS = re.compile(
-    r"/("
-    r"product|products|p|pd|item|items|dp|"
-    r"catalog|collection|collections|"
-    r"shop|store|"
-    r"pricing|plans|plan|"
-    r"features|feature|capabilities|"
-    r"solutions|solution|use-cases|usecase|"
-    r"enterprise|business|teams|team|"
-    r"platform|"
-    r"apps|app|"
-    r"compare|comparison|comparisons|alternative|alternatives|"
-    r"reviews|review|"
-    r"detail|details"
-    r")(/|$)",
-    re.I,
+# ---------------------------------------------------------------------------
+# URL classification
+# ---------------------------------------------------------------------------
+
+# These paths are generally not useful for competitive product intelligence.
+# They are filtered before scraping so we do not waste extraction calls.
+_NON_RESEARCH_PATH_SEGMENTS = {
+    "about",
+    "author",
+    "authors",
+    "blog",
+    "careers",
+    "career",
+    "changelog",
+    "community",
+    "contact",
+    "customers",
+    "customer-stories",
+    "docs",
+    "documentation",
+    "faq",
+    "help",
+    "legal",
+    "login",
+    "logout",
+    "news",
+    "press",
+    "privacy",
+    "resources",
+    "security",
+    "status",
+    "support",
+    "terms",
+    "webinars",
+}
+
+# These are especially important for this application's ProductOffer
+# extractor. An integration page can contain product-like language but is not
+# itself a commercial product offer.
+_NON_OFFER_PATH_SEGMENTS = {
+    "connections",
+    "integration",
+    "integrations",
+}
+
+# Conventional commercial paths used as a last-resort discovery fallback.
+# These are candidates, not guaranteed valid pages.
+_COMMON_INTELLIGENCE_PATHS = (
+    "pricing",
+    "plans",
+    "product",
+    "products",
+    "features",
+    "solutions",
+    "enterprise",
+    "compare",
 )
 
 _DROP_QUERY = {
@@ -74,8 +102,19 @@ _DROP_QUERY = {
     "scm",
 }
 
-_SITEMAP_TAG = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.I | re.S)
-_ROBOTS_SITEMAP = re.compile(r"(?im)^\s*Sitemap:\s*(.+)$")
+_SITEMAP_TAG = re.compile(
+    r"<loc>\s*(.*?)\s*</loc>",
+    re.I | re.S,
+)
+
+_ROBOTS_SITEMAP = re.compile(
+    r"(?im)^\s*Sitemap:\s*(.+)$",
+)
+
+
+# ---------------------------------------------------------------------------
+# URL normalization
+# ---------------------------------------------------------------------------
 
 
 def canonical_url(url: str) -> str:
@@ -87,9 +126,12 @@ def canonical_url(url: str) -> str:
     path = u.path.rstrip("/") or "/"
 
     keep = [
-        (k, v)
-        for k, v in parse_qsl(u.query, keep_blank_values=True)
-        if k.lower() not in _DROP_QUERY
+        (key, value)
+        for key, value in parse_qsl(
+            u.query,
+            keep_blank_values=True,
+        )
+        if key.lower() not in _DROP_QUERY
     ]
 
     query = urlencode(keep)
@@ -108,31 +150,108 @@ def canonical_url(url: str) -> str:
 
 def url_hash(url: str) -> str:
     """Return a stable SHA-256 hash for a canonical URL."""
-    return hashlib.sha256(canonical_url(url).encode()).hexdigest()
+    return hashlib.sha256(
+        canonical_url(url).encode()
+    ).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# URL classification
+# ---------------------------------------------------------------------------
+
+
+def _path_segments(url: str) -> list[str]:
+    """Return normalized non-empty URL path segments."""
+    path = urlparse(url).path
+
+    return [
+        segment.lower()
+        for segment in path.split("/")
+        if segment
+    ]
+
+
+def _is_non_research_url(url: str) -> bool:
+    """Return True for pages that should not enter research scraping."""
+    segments = _path_segments(url)
+
+    if not segments:
+        return False
+
+    if any(
+        segment in _NON_RESEARCH_PATH_SEGMENTS
+        for segment in segments
+    ):
+        return True
+
+    if any(
+        segment in _NON_OFFER_PATH_SEGMENTS
+        for segment in segments
+    ):
+        return True
+
+    return False
 
 
 def is_product_url(url: str) -> bool:
-    """Return whether a URL looks relevant for competitive research.
+    """Return whether a URL is a plausible competitive-intelligence page.
 
-    Kept under the existing function name for backwards compatibility with
-    existing tests and callers.
+    The function name is retained for backwards compatibility.
+
+    Historically this function required specific product-like path patterns.
+    That was too restrictive for SaaS websites, whose commercial pages can
+    have arbitrary URL structures. The new behavior therefore means:
+
+        valid HTTP(S) URL
+        + not an obvious non-research/non-offer page
+
+    The actual LLM extractor remains responsible for deciding whether the
+    page contains a valid ProductOffer.
     """
-    path = urlparse(url).path
-    return bool(_RELEVANT_PATH_PATTERNS.search(path))
+    parsed = urlparse(url)
+
+    if parsed.scheme.lower() not in {
+        "http",
+        "https",
+    }:
+        return False
+
+    if not parsed.netloc:
+        return False
+
+    return not _is_non_research_url(url)
+
+
+def _is_extractable_candidate(url: str) -> bool:
+    """Return whether a URL is worth sending through product extraction."""
+    return is_product_url(url)
+
+
+# ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
 
 
 def dedupe_urls(urls: Iterable[str]) -> List[str]:
     """Deduplicate URLs using their canonical URL hash."""
     seen = set()
-    out = []
+    output: list[str] = []
 
     for url in urls:
-        if not isinstance(url, str) or not url.strip():
+        if not isinstance(url, str):
+            continue
+
+        if not url.strip():
             continue
 
         canonical = canonical_url(url)
 
-        if not canonical.startswith(("http://", "https://")):
+        if not canonical.startswith(
+            (
+                "http://",
+                "https://",
+            )
+        ):
             continue
 
         url_key = url_hash(canonical)
@@ -141,20 +260,119 @@ def dedupe_urls(urls: Iterable[str]) -> List[str]:
             continue
 
         seen.add(url_key)
-        out.append(canonical)
+        output.append(canonical)
 
-    return out
-
-
-def _same_domain(url: str, website: str) -> bool:
-    """Allow the target hostname and its subdomains."""
-    a = urlparse(url).netloc.lower().split(":", 1)[0]
-    b = urlparse(website).netloc.lower().split(":", 1)[0]
-
-    return a == b or a.endswith("." + b)
+    return output
 
 
-def _firecrawl_link_url(link) -> str | None:
+# ---------------------------------------------------------------------------
+# Domain handling
+# ---------------------------------------------------------------------------
+
+
+def _hostname(url: str) -> str:
+    """Return a normalized hostname."""
+    return (
+        urlparse(url)
+        .netloc
+        .lower()
+        .split(":", 1)[0]
+    )
+
+
+def _same_domain(
+    url: str,
+    website: str,
+    allowed_hosts: set[str] | None = None,
+) -> bool:
+    """Allow the target hostname, subdomains and known redirect host."""
+    candidate = _hostname(url)
+
+    if not candidate:
+        return False
+
+    hosts = {
+        _hostname(website),
+    }
+
+    if allowed_hosts:
+        hosts.update(
+            host.lower()
+            for host in allowed_hosts
+            if host
+        )
+
+    for host in hosts:
+        if (
+            candidate == host
+            or candidate.endswith("." + host)
+        ):
+            return True
+
+    return False
+
+
+def _resolve_allowed_hosts(
+    website: str,
+) -> set[str]:
+    """Resolve the supplied website and collect its final hostname.
+
+    This handles sites where the user enters an old/alternate official
+    hostname and the current commercial site redirects elsewhere.
+
+    Example:
+        notion.so -> notion.com
+    """
+    hosts = {
+        _hostname(website),
+    }
+
+    if not hosts:
+        return hosts
+
+    try:
+        import requests
+
+        response = requests.get(
+            website,
+            timeout=settings.request_timeout_seconds,
+            headers={
+                "User-Agent": "cintel-research/1.0",
+            },
+            allow_redirects=True,
+        )
+
+        final_host = _hostname(
+            response.url
+        )
+
+        if final_host:
+            hosts.add(final_host)
+
+        logger.info(
+            "resolved discovery hosts for %s: %s",
+            website,
+            sorted(hosts),
+        )
+
+    except Exception as exc:
+        logger.info(
+            "could not resolve redirect host for %s: %s",
+            website,
+            exc,
+        )
+
+    return hosts
+
+
+# ---------------------------------------------------------------------------
+# Firecrawl
+# ---------------------------------------------------------------------------
+
+
+def _firecrawl_link_url(
+    link,
+) -> str | None:
     """Extract a URL from Firecrawl v1/v2 Map link formats.
 
     v1 commonly returns:
@@ -173,7 +391,11 @@ def _firecrawl_link_url(link) -> str | None:
             return value.strip() or None
 
     # Be tolerant of SDK-style objects exposing a `.url` attribute.
-    value = getattr(link, "url", None)
+    value = getattr(
+        link,
+        "url",
+        None,
+    )
 
     if isinstance(value, str):
         return value.strip() or None
@@ -181,64 +403,106 @@ def _firecrawl_link_url(link) -> str | None:
     return None
 
 
-def discover_firecrawl(website: str) -> List[str]:
-    """Firecrawl /map: discover intelligence-relevant site URLs."""
+def discover_firecrawl(
+    website: str,
+) -> List[str]:
+    """Discover candidate intelligence URLs through Firecrawl /map."""
     import requests
 
     if not settings.firecrawl_api_key:
-        raise RuntimeError("FIRECRAWL_API_KEY not set")
+        raise RuntimeError(
+            "FIRECRAWL_API_KEY not set"
+        )
 
-    resp = requests.post(
+    allowed_hosts = _resolve_allowed_hosts(
+        website
+    )
+
+    response = requests.post(
         f"{settings.firecrawl_base_url}/map",
         json={
             "url": website,
             "limit": 200,
         },
         headers={
-            "Authorization": f"Bearer {settings.firecrawl_api_key}",
+            "Authorization": (
+                f"Bearer {settings.firecrawl_api_key}"
+            ),
             "Content-Type": "application/json",
         },
         timeout=settings.request_timeout_seconds,
     )
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"firecrawl map http {resp.status_code}")
+    if response.status_code != 200:
+        raise RuntimeError(
+            "firecrawl map http "
+            f"{response.status_code}"
+        )
 
-    payload = resp.json()
+    payload = response.json()
 
-    raw_links = payload.get("links") or []
+    raw_links = payload.get(
+        "links"
+    ) or []
 
-    links = []
+    candidates: list[str] = []
 
     for raw_link in raw_links:
-        url = _firecrawl_link_url(raw_link)
+        url = _firecrawl_link_url(
+            raw_link
+        )
 
         if not url:
             continue
 
-        if not _same_domain(url, website):
+        if not _same_domain(
+            url,
+            website,
+            allowed_hosts,
+        ):
             continue
 
-        if not is_product_url(url):
+        if not _is_extractable_candidate(
+            url
+        ):
             continue
 
-        links.append(url)
+        candidates.append(url)
+
+    # Always consider the supplied website itself.
+    # Homepage content can contain pricing/product intelligence and is useful
+    # when a site has an unusual URL structure.
+    if is_product_url(website):
+        candidates.insert(
+            0,
+            website,
+        )
+
+    result = dedupe_urls(
+        candidates
+    )
 
     logger.info(
-        "firecrawl discovered %d relevant URLs from %d returned links for %s",
-        len(links),
+        "firecrawl discovered %d candidate URLs "
+        "from %d returned links for %s",
+        len(result),
         len(raw_links),
         website,
     )
 
-    return dedupe_urls(links)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# HTTP / sitemap helpers
+# ---------------------------------------------------------------------------
 
 
 def _fetch(url: str) -> str:
     """Fetch a URL and return its text."""
     import requests
 
-    resp = requests.get(
+    response = requests.get(
         url,
         timeout=settings.request_timeout_seconds,
         headers={
@@ -246,29 +510,52 @@ def _fetch(url: str) -> str:
         },
     )
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"http {resp.status_code} for {url}")
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"http {response.status_code} for {url}"
+        )
 
-    return resp.text
+    return response.text
 
 
-def _loc_links(text: str) -> List[str]:
+def _loc_links(
+    text: str,
+) -> List[str]:
     """Extract sitemap <loc> URLs."""
-    return [link.strip() for link in _SITEMAP_TAG.findall(text)]
+    return [
+        link.strip()
+        for link in _SITEMAP_TAG.findall(
+            text
+        )
+    ]
 
 
-def discover_sitemaps(website: str) -> List[str]:
-    """Discover relevant URLs through robots.txt and sitemap files."""
+# ---------------------------------------------------------------------------
+# Sitemap discovery
+# ---------------------------------------------------------------------------
+
+
+def discover_sitemaps(
+    website: str,
+) -> List[str]:
+    """Discover candidate intelligence URLs through sitemap files."""
+    allowed_hosts = _resolve_allowed_hosts(
+        website
+    )
+
     sitemap_urls: List[str] = []
 
     try:
         robots = _fetch(
-            website.rstrip("/") + "/robots.txt"
+            website.rstrip("/")
+            + "/robots.txt"
         )
 
         sitemap_urls = [
             sitemap.strip()
-            for sitemap in _ROBOTS_SITEMAP.findall(robots)
+            for sitemap in _ROBOTS_SITEMAP.findall(
+                robots
+            )
         ]
 
         logger.info(
@@ -279,33 +566,43 @@ def discover_sitemaps(website: str) -> List[str]:
 
     except Exception as exc:
         logger.info(
-            "no robots.txt for %s (%s) — defaulting to /sitemap.xml",
+            "no robots.txt for %s (%s) — "
+            "defaulting to /sitemap.xml",
             website,
             exc,
         )
 
     if not sitemap_urls:
         sitemap_urls = [
-            website.rstrip("/") + "/sitemap.xml"
+            website.rstrip("/")
+            + "/sitemap.xml"
         ]
 
     urls: List[str] = []
     visited = set()
 
-    def process(sitemap: str, depth: int = 0) -> None:
+    def process(
+        sitemap: str,
+        depth: int = 0,
+    ) -> None:
         sitemap = sitemap.strip()
 
         if not sitemap:
             return
 
-        # Keep the existing bounded sitemap traversal.
-        if sitemap in visited or depth > 1:
+        # Keep sitemap traversal bounded.
+        if (
+            sitemap in visited
+            or depth > 2
+        ):
             return
 
         visited.add(sitemap)
 
         try:
-            text = _fetch(sitemap)
+            text = _fetch(
+                sitemap
+            )
 
         except Exception as exc:
             logger.warning(
@@ -315,32 +612,56 @@ def discover_sitemaps(website: str) -> List[str]:
             )
             return
 
-        for loc in _loc_links(text):
+        for loc in _loc_links(
+            text
+        ):
             loc = loc.strip()
 
             if not loc:
                 continue
 
             if (
-                loc.lower().endswith(".xml")
+                loc.lower().endswith(
+                    ".xml"
+                )
                 or "sitemap" in loc.lower()
             ):
-                process(loc, depth + 1)
+                process(
+                    loc,
+                    depth + 1,
+                )
                 continue
 
-            if not _same_domain(loc, website):
+            if not _same_domain(
+                loc,
+                website,
+                allowed_hosts,
+            ):
                 continue
 
-            if is_product_url(loc):
-                urls.append(loc)
+            if not _is_extractable_candidate(
+                loc
+            ):
+                continue
+
+            urls.append(loc)
 
     for sitemap in sitemap_urls:
         process(sitemap)
 
-    result = dedupe_urls(urls)
+    # The supplied website itself is always a candidate.
+    if is_product_url(website):
+        urls.insert(
+            0,
+            website,
+        )
+
+    result = dedupe_urls(
+        urls
+    )
 
     logger.info(
-        "sitemap discovery found %d relevant URLs for %s",
+        "sitemap discovery found %d candidate URLs for %s",
         len(result),
         website,
     )
@@ -348,26 +669,145 @@ def discover_sitemaps(website: str) -> List[str]:
     return result
 
 
-def discover_urls_for_entity(website: str) -> List[str]:
-    """Try Firecrawl first, then fall back to the sitemap chain."""
+# ---------------------------------------------------------------------------
+# Last-resort commercial URL seeding
+# ---------------------------------------------------------------------------
+
+
+def _seed_common_intelligence_urls(
+    website: str,
+) -> List[str]:
+    """Generate a small set of conventional commercial URLs.
+
+    This is only used when Firecrawl and sitemap discovery produce no
+    candidates. A missing page is harmless because the scraper will reject
+    it normally.
+    """
+    parsed = urlparse(
+        website
+    )
+
+    if not parsed.netloc:
+        return []
+
+    base = urlunparse(
+        (
+            parsed.scheme
+            or "https",
+            parsed.netloc,
+            "",
+            "",
+            "",
+            "",
+        )
+    ).rstrip("/")
+
+    seeded = [
+        f"{base}/{path}"
+        for path in _COMMON_INTELLIGENCE_PATHS
+    ]
+
+    # Include the homepage as the first candidate.
+    seeded.insert(
+        0,
+        base,
+    )
+
+    return dedupe_urls(
+        seeded
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public discovery entry point
+# ---------------------------------------------------------------------------
+
+
+def discover_urls_for_entity(
+    website: str,
+) -> List[str]:
+    """Discover candidate research URLs using multiple strategies.
+
+    Strategy:
+
+    1. Firecrawl Map.
+    2. Sitemap discovery if Firecrawl has no useful candidates.
+    3. Common commercial URL seeds as a final fallback.
+
+    The extractor remains responsible for deciding whether a scraped page
+    actually contains a valid commercial ProductOffer.
+    """
+
+    # --------------------------------------------------------------
+    # 1. Firecrawl
+    # --------------------------------------------------------------
+
     if settings.firecrawl_api_key:
         try:
-            found = discover_firecrawl(website)
+            found = discover_firecrawl(
+                website
+            )
 
             if found:
+                logger.info(
+                    "using %d URLs discovered by Firecrawl for %s",
+                    len(found),
+                    website,
+                )
+
                 return found
 
             logger.warning(
-                "firecrawl returned no relevant URLs for %s; "
+                "Firecrawl returned no usable URLs for %s; "
                 "falling back to sitemap discovery",
                 website,
             )
 
         except Exception as exc:
             logger.warning(
-                "firecrawl discovery failed for %s: %s",
+                "Firecrawl discovery failed for %s: %s",
                 website,
                 exc,
             )
 
-    return discover_sitemaps(website)
+    # --------------------------------------------------------------
+    # 2. Sitemap
+    # --------------------------------------------------------------
+
+    try:
+        found = discover_sitemaps(
+            website
+        )
+
+        if found:
+            logger.info(
+                "using %d URLs discovered through sitemap for %s",
+                len(found),
+                website,
+            )
+
+            return found
+
+    except Exception as exc:
+        logger.warning(
+            "sitemap discovery failed for %s: %s",
+            website,
+            exc,
+        )
+
+    # --------------------------------------------------------------
+    # 3. Last-resort conventional paths
+    # --------------------------------------------------------------
+
+    seeded = _seed_common_intelligence_urls(
+        website
+    )
+
+    logger.warning(
+        "no discovered URLs for %s; "
+        "using %d conventional intelligence URL candidates",
+        website,
+        len(seeded),
+    )
+
+    return seeded
