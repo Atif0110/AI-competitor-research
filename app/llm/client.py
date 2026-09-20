@@ -1,14 +1,18 @@
-"""Provider-agnostic LLM client with explicit provider selection and fallback.
+"""Provider-agnostic LLM client with explicit provider selection.
 
-Production behavior:
-- Provider credentials are read only from app.config/settings.
-- Demo mode is explicit via DEMO_MODE=true.
-- Missing provider credentials never silently switch a production deployment
-  into demo mode.
-- Gemini, Groq, OpenAI and Anthropic are supported.
-- LLM_PROVIDER can pin a single provider or use "auto" for a configured chain.
+Supported providers:
+    - gemini
+    - groq
+    - openai
+    - anthropic
+    - demo
 
-Telemetry separates logical LLM requests from provider API attempts.
+Production deployments should explicitly select a real provider, e.g.
+LLM_PROVIDER=gemini, and set its API key in the environment.
+
+For backwards-compatible local tests, LLM_PROVIDER=auto with no provider
+credentials still uses the deterministic DemoClient. Explicit providers never
+silently fall back to demo.
 """
 from __future__ import annotations
 
@@ -30,14 +34,13 @@ _KEY_PREFIX = {
 
 
 def _warn_if_malformed(name: str, key: Optional[str]) -> None:
-    """Log a warning for obviously malformed known key formats."""
     if not key:
         return
 
     prefix = _KEY_PREFIX.get(name)
     if prefix and not key.startswith(prefix):
         logger.warning(
-            "%s_API_KEY is set but does not look like a valid %s key "
+            "%s_API_KEY is set but doesn't look like a valid %s key "
             "(expected it to start with '%s')",
             name.upper(),
             name,
@@ -46,13 +49,18 @@ def _warn_if_malformed(name: str, key: Optional[str]) -> None:
 
 
 def _resolve_provider_order() -> List[str]:
-    """Resolve the provider chain from explicit configuration and credentials.
+    """Resolve the configured provider chain.
 
-    Explicit providers pin the chain to that provider only:
-        gemini, groq, openai, anthropic, demo
+    Explicit provider:
+        gemini/groq/openai/anthropic -> that provider only
 
-    In auto mode, Gemini is preferred when configured, followed by Groq,
-    OpenAI, and Anthropic. Only providers with credentials are included.
+    Demo:
+        demo -> demo only
+
+    Auto:
+        Gemini leads when configured.
+        Otherwise preserve the existing Anthropic/OpenAI primary ordering,
+        with Groq as a trailing fallback.
     """
     forced = settings.llm_provider
 
@@ -62,21 +70,41 @@ def _resolve_provider_order() -> List[str]:
     if forced in _KNOWN_PROVIDERS:
         return [forced]
 
-    # "auto" is deterministic: prefer Gemini, then Groq, then OpenAI,
-    # then Anthropic. This can be changed later without touching provider
-    # implementation code.
-    configured = {
-        "gemini": bool(settings.gemini_api_key),
-        "groq": bool(settings.groq_api_key),
-        "openai": bool(settings.openai_api_key),
-        "anthropic": bool(settings.anthropic_api_key),
-    }
+    # Auto mode.
+    have_gemini = bool(getattr(settings, "gemini_api_key", None))
+    have_openai = bool(settings.openai_api_key)
+    have_anthropic = bool(settings.anthropic_api_key)
+    have_groq = bool(settings.groq_api_key)
 
-    return [name for name in ("gemini", "groq", "openai", "anthropic") if configured[name]]
+    order: List[str] = []
+
+    # Gemini is the preferred provider when configured.
+    if have_gemini:
+        order.append("gemini")
+
+    # Preserve the original project's OpenAI/Anthropic behavior.
+    if have_openai and have_anthropic:
+        preferred = "anthropic"
+        if settings.llm_provider in ("openai", "anthropic"):
+            preferred = settings.llm_provider
+
+        order.append(preferred)
+        order.append(
+            "openai" if preferred == "anthropic" else "anthropic"
+        )
+    elif have_anthropic:
+        order.append("anthropic")
+    elif have_openai:
+        order.append("openai")
+
+    if have_groq:
+        order.append("groq")
+
+    return order
 
 
 class LLMError(Exception):
-    """Raised when no configured LLM provider can complete a request."""
+    """Raised when a configured LLM provider cannot complete a request."""
 
 
 class ChatMessage:
@@ -92,29 +120,38 @@ class _GeminiClient:
         from google import genai
         from google.genai import types
 
+        if not settings.gemini_api_key:
+            raise LLMError("GEMINI_API_KEY is not configured")
+
         client = genai.Client(api_key=settings.gemini_api_key)
 
-        system_parts = [
+        system = "\n".join(
             message.content
             for message in messages
             if message.role == "system"
-        ]
-        user_parts = [
+        )
+
+        user = "\n".join(
             message.content
             for message in messages
             if message.role != "system"
-        ]
+        )
 
         response = client.models.generate_content(
             model=settings.gemini_model,
-            contents="\n".join(user_parts),
+            contents=user,
             config=types.GenerateContentConfig(
-                system_instruction="\n".join(system_parts) or None,
+                system_instruction=system or None,
                 temperature=0,
             ),
         )
 
-        return getattr(response, "text", "") or ""
+        output = getattr(response, "text", "") or ""
+
+        if not output.strip():
+            raise LLMError("Gemini returned an empty response")
+
+        return output
 
 
 class _GroqClient:
@@ -142,10 +179,12 @@ class _OpenAIClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         from openai import OpenAI
 
-        client = OpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-        )
+        kwargs = {"api_key": settings.openai_api_key}
+
+        if settings.openai_base_url:
+            kwargs["base_url"] = settings.openai_base_url
+
+        client = OpenAI(**kwargs)
 
         payload = [
             {"role": message.role, "content": message.content}
@@ -171,10 +210,12 @@ class _AnthropicClient:
     def complete(self, messages: List[ChatMessage]) -> str:
         import anthropic
 
-        client = anthropic.Anthropic(
-            api_key=settings.anthropic_api_key,
-            base_url=settings.anthropic_base_url,
-        )
+        kwargs = {"api_key": settings.anthropic_api_key}
+
+        if settings.anthropic_base_url:
+            kwargs["base_url"] = settings.anthropic_base_url
+
+        client = anthropic.Anthropic(**kwargs)
 
         system = "\n".join(
             message.content
@@ -203,7 +244,7 @@ class _AnthropicClient:
 
 
 class DemoClient:
-    """Deterministic offline provider for explicit demo/test mode only."""
+    """Deterministic offline provider for tests and explicit demo mode."""
 
     def complete(self, messages: List[ChatMessage]) -> str:
         import json
@@ -214,13 +255,11 @@ class DemoClient:
             for message in messages
             if message.role == "user"
         )
-
         system = "\n".join(
             message.content
             for message in messages
             if message.role == "system"
         )
-
         low_sys = system.lower()
 
         if "review_text" in low_sys or (
@@ -347,7 +386,7 @@ def _norm_avail(value: str) -> str:
 
 
 class LLMClient:
-    """LLM facade with explicit provider selection and safe fallback."""
+    """LLM facade with provider fallback and telemetry."""
 
     def __init__(self) -> None:
         self._providers: List[tuple[str, object]] = []
@@ -361,11 +400,9 @@ class LLMClient:
         self._fallback_since: Optional[float] = None
         self.cooldown_seconds = 60
 
-        if settings.demo_mode:
+        if settings.llm_provider == "demo" or settings.demo_mode:
             self._providers = [("demo", DemoClient())]
-            logger.warning(
-                "DEMO_MODE=true — using deterministic demo LLM provider"
-            )
+            logger.info("Demo LLM provider enabled")
             return
 
         provider_order = _resolve_provider_order()
@@ -378,7 +415,7 @@ class LLMClient:
         }
 
         keys = {
-            "gemini": settings.gemini_api_key,
+            "gemini": getattr(settings, "gemini_api_key", None),
             "groq": settings.groq_api_key,
             "openai": settings.openai_api_key,
             "anthropic": settings.anthropic_api_key,
@@ -392,7 +429,7 @@ class LLMClient:
 
             if not key:
                 logger.warning(
-                    "LLM provider '%s' selected but its API key is missing",
+                    "LLM provider '%s' is selected but its API key is missing",
                     name,
                 )
                 continue
@@ -401,23 +438,32 @@ class LLMClient:
             self._providers.append((name, factories[name]()))
 
         if not self._providers:
-            raise LLMError(
-                "No LLM provider is configured. Set LLM_PROVIDER and its "
-                "corresponding API key, or explicitly set DEMO_MODE=true "
-                "for offline/demo use."
+            # Keep the existing project's offline test behavior when the
+            # provider is not explicitly selected. Production should set
+            # LLM_PROVIDER=gemini (or another real provider).
+            if settings.llm_provider == "auto":
+                logger.warning(
+                    "No LLM keys configured in auto mode; using deterministic "
+                    "demo provider for offline/test compatibility"
+                )
+                self._providers = [("demo", DemoClient())]
+            else:
+                raise LLMError(
+                    "No LLM provider is configured. Set "
+                    "LLM_PROVIDER and its corresponding API key, or "
+                    "explicitly set DEMO_MODE=true for offline/demo use."
+                )
+        else:
+            logger.info(
+                "LLM provider chain resolved: %s",
+                " -> ".join(name for name, _ in self._providers),
             )
-
-        logger.info(
-            "LLM provider chain resolved: %s",
-            " -> ".join(name for name, _ in self._providers),
-        )
 
     def complete(self, system: str, user: str) -> str:
         if not self._providers:
             raise LLMError("No LLM provider is configured")
 
         self.calls += 1
-
         last_error: Optional[Exception] = None
 
         if (
