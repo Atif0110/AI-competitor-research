@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Discovery limits
+# ---------------------------------------------------------------------------
+
+MAX_DISCOVERY_CANDIDATES = 24
+FIRECRAWL_MAP_LIMIT = 200
+
+
+# ---------------------------------------------------------------------------
 # URL classification
 # ---------------------------------------------------------------------------
 
@@ -73,6 +81,42 @@ _NON_OFFER_PATH_SEGMENTS = {
     "connections",
     "integration",
     "integrations",
+    "workspace",
+    "workspaces",
+    "dashboard",
+    "admin",
+    "account",
+    "accounts",
+    "signin",
+    "signup",
+    "register",
+    "oauth",
+    "authorize",
+}
+
+_NON_PUBLIC_PATH_SEGMENTS = {
+    "p",
+    "w",
+    "s",
+    "page",
+    "pages",
+    "users",
+    "user",
+    "members",
+    "member",
+    "settings",
+    "templates",
+}
+
+_NON_PUBLIC_HOST_PREFIXES = {
+    "app.",
+    "admin.",
+    "dashboard.",
+    "accounts.",
+    "account.",
+    "auth.",
+    "login.",
+    "signin.",
 }
 
 # Conventional commercial paths used as a last-resort discovery fallback.
@@ -87,6 +131,26 @@ _COMMON_INTELLIGENCE_PATHS = (
     "enterprise",
     "compare",
 )
+
+_HIGH_SIGNAL_PATH_SEGMENTS = {
+    "pricing",
+    "plans",
+    "product",
+    "products",
+    "features",
+    "solutions",
+    "enterprise",
+    "compare",
+    "comparison",
+    "alternatives",
+    "platform",
+    "capabilities",
+    "use-cases",
+    "usecase",
+    "services",
+    "business",
+    "teams",
+}
 
 _DROP_QUERY = {
     "utm_source",
@@ -171,6 +235,19 @@ def _path_segments(url: str) -> list[str]:
     ]
 
 
+def _is_non_public_host(url: str) -> bool:
+    """Return True for common application/admin/auth subdomains."""
+    hostname = _hostname(url)
+
+    if not hostname:
+        return False
+
+    return any(
+        hostname.startswith(prefix)
+        for prefix in _NON_PUBLIC_HOST_PREFIXES
+    )
+
+
 def _is_non_research_url(url: str) -> bool:
     """Return True for pages that should not enter research scraping."""
     segments = _path_segments(url)
@@ -190,6 +267,15 @@ def _is_non_research_url(url: str) -> bool:
     ):
         return True
 
+    if any(
+        segment in _NON_PUBLIC_PATH_SEGMENTS
+        for segment in segments
+    ):
+        return True
+
+    if _is_non_public_host(url):
+        return True
+
     return False
 
 
@@ -197,16 +283,6 @@ def is_product_url(url: str) -> bool:
     """Return whether a URL is a plausible competitive-intelligence page.
 
     The function name is retained for backwards compatibility.
-
-    Historically this function required specific product-like path patterns.
-    That was too restrictive for SaaS websites, whose commercial pages can
-    have arbitrary URL structures. The new behavior therefore means:
-
-        valid HTTP(S) URL
-        + not an obvious non-research/non-offer page
-
-    The actual LLM extractor remains responsible for deciding whether the
-    page contains a valid ProductOffer.
     """
     parsed = urlparse(url)
 
@@ -225,6 +301,58 @@ def is_product_url(url: str) -> bool:
 def _is_extractable_candidate(url: str) -> bool:
     """Return whether a URL is worth sending through product extraction."""
     return is_product_url(url)
+
+
+def _candidate_score(url: str, website: str) -> int:
+    """Score URLs so high-signal commercial pages are processed first."""
+    parsed = urlparse(url)
+    segments = _path_segments(url)
+
+    score = 0
+
+    if canonical_url(url) == canonical_url(website):
+        score += 1000
+
+    if not segments:
+        score += 900
+
+    score += sum(
+        100
+        for segment in segments
+        if segment in _HIGH_SIGNAL_PATH_SEGMENTS
+    )
+
+    score -= len(segments) * 3
+
+    if parsed.query:
+        score -= 5
+
+    return score
+
+
+def _rank_and_limit_candidates(
+    urls: Iterable[str],
+    website: str,
+    limit: int = MAX_DISCOVERY_CANDIDATES,
+) -> List[str]:
+    """Canonicalize, dedupe, rank and hard-cap candidate URLs."""
+    candidates = dedupe_urls(urls)
+
+    candidates = [
+        url
+        for url in candidates
+        if _is_extractable_candidate(url)
+    ]
+
+    candidates.sort(
+        key=lambda url: (
+            -_candidate_score(url, website),
+            len(url),
+            url,
+        )
+    )
+
+    return candidates[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +550,7 @@ def discover_firecrawl(
         f"{settings.firecrawl_base_url}/map",
         json={
             "url": website,
-            "limit": 200,
+            "limit": FIRECRAWL_MAP_LIMIT,
         },
         headers={
             "Authorization": (
@@ -478,12 +606,13 @@ def discover_firecrawl(
             website,
         )
 
-    result = dedupe_urls(
-        candidates
+    result = _rank_and_limit_candidates(
+        candidates,
+        website,
     )
 
     logger.info(
-        "firecrawl discovered %d candidate URLs "
+        "firecrawl discovered %d usable candidates "
         "from %d returned links for %s",
         len(result),
         len(raw_links),
@@ -646,6 +775,9 @@ def discover_sitemaps(
 
             urls.append(loc)
 
+            if len(urls) >= MAX_DISCOVERY_CANDIDATES * 10:
+                return
+
     for sitemap in sitemap_urls:
         process(sitemap)
 
@@ -656,8 +788,9 @@ def discover_sitemaps(
             website,
         )
 
-    result = dedupe_urls(
-        urls
+    result = _rank_and_limit_candidates(
+        urls,
+        website,
     )
 
     logger.info(
@@ -713,8 +846,9 @@ def _seed_common_intelligence_urls(
         base,
     )
 
-    return dedupe_urls(
-        seeded
+    return _rank_and_limit_candidates(
+        seeded,
+        website,
     )
 
 
