@@ -31,6 +31,7 @@ class StructuredExtractor:
     - asks the LLM for structured product data
     - validates the result against ProductOffer
     - retries malformed/invalid responses
+    - stops immediately on provider quota/availability failures
     - preserves expected-region mismatch telemetry
     - makes expected_region authoritative
     - calculates extraction confidence
@@ -176,6 +177,8 @@ Rules:
             expected_region=expected_region_value,
         )
 
+        # Keep extraction conservative because provider quotas are often
+        # request-based. A single page should normally consume one LLM call.
         max_attempts = max(
             1,
             int(settings.extraction_max_attempts),
@@ -258,6 +261,36 @@ Rules:
             except Exception as exc:
                 previous_error = str(exc)
 
+                error_text = previous_error.lower()
+
+                # Provider quota/rate-limit failures must never be retried.
+                # Retrying here would consume the same exhausted quota again.
+                quota_error = (
+                    "429" in error_text
+                    or "resource_exhausted" in error_text
+                    or "quota exceeded" in error_text
+                    or "rate limit" in error_text
+                    or "ratelimit" in error_text
+                )
+
+                # Provider availability failures should also stop retries.
+                # The LLM client already handles configured provider fallback.
+                provider_unavailable = (
+                    "503" in error_text
+                    or "service unavailable" in error_text
+                    or "high demand" in error_text
+                )
+
+                if quota_error or provider_unavailable:
+                    break
+
+                # Validation/parsing failures can still use the configured
+                # retry budget to correct malformed LLM output.
+                if attempts < max_attempts:
+                    continue
+
+                break
+
         return ExtractionResult(
             ok=False,
             offer=None,
@@ -323,6 +356,7 @@ Never invent a price or other product information.
                 text,
                 flags=re.IGNORECASE,
             )
+
             text = re.sub(
                 r"\s*```$",
                 "",
