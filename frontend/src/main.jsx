@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import './deep.css';
+import './theme.css';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const NAV = [
