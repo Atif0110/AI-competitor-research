@@ -40,7 +40,12 @@ class ResearchChat:
 
     def __init__(self, documents, client=_UNSET) -> None:
         self.documents = documents
-        self.llm = _shared_client() if client is _UNSET else client
+        resolved = _shared_client() if client is _UNSET else client
+        # The deterministic demo provider is a structured product extractor, not
+        # a chat model: it answers with a fixed JSON offer. Using it here would
+        # return that blob regardless of the question, so treat it as "no
+        # model" and answer from evidence instead.
+        self.llm = None if _is_demo_provider(resolved) else resolved
 
     # ------------------------------------------------------------------
     def ask(
@@ -284,6 +289,21 @@ def _covers(question: str, context: str, threshold: Optional[float] = None) -> b
         1 for term in terms if any(form in haystack for form in _variants(term))
     )
     return hits / len(terms) >= limit
+
+
+def _is_demo_provider(client) -> bool:
+    """True when ``client`` cannot actually answer open questions."""
+    if client is None:
+        return True
+    for attribute in ("provider_name", "provider"):
+        name = getattr(client, attribute, None)
+        if isinstance(name, str) and name:
+            return name.strip().lower() == "demo"
+    if getattr(client, "current_provider", None) == "demo":
+        return True
+    # The wrapper's own provider name is the resolved active provider.
+    active = getattr(client, "active_provider", None)
+    return isinstance(active, str) and active.strip().lower() == "demo"
 
 
 def _shared_client():

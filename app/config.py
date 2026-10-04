@@ -650,11 +650,16 @@ class Settings:
             "anthropic": bool(self.anthropic_api_key),
             "openai": bool(self.openai_api_key),
         }
-        return {
+        tiers = {
             name: ("free" if name in self.FREE_TIER_PROVIDERS else "paid")
             for name, configured_flag in configured.items()
             if configured_flag
         }
+        if not tiers:
+            # No keys at all: the deterministic provider is what will actually
+            # serve requests, and reporting an empty map hides that.
+            tiers["demo"] = "offline"
+        return tiers
 
     def ensure_dirs(self) -> None:
         for directory in (

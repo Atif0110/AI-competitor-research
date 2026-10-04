@@ -358,6 +358,37 @@ def test_chat_survives_a_model_that_fails(site, env):
     assert "$49" in answer.message
 
 
+def test_chat_ignores_the_deterministic_demo_provider(site, env):
+    """The demo provider is a product extractor, not a chat model.
+
+    Without this guard a deployment with no keys answered every question with
+    the same canned product JSON, and out-of-scope questions looked answerable.
+    """
+    from app.research.chat import ResearchChat
+
+    pipeline = DeepResearchPipeline()
+    run = _run_fixture(pipeline, site)
+    # No explicit client: this is the shape the API endpoint actually uses.
+    chat = ResearchChat(pipeline.documents)
+
+    assert chat.llm is None
+
+    answer = chat.ask(
+        "How much is the enterprise plan per month?",
+        run_id=run.run_id,
+        session_id="sess-5",
+    )
+    assert answer.answerable is True
+    assert "$49" in answer.message
+    assert "product_name" not in answer.message
+
+    gap = chat.ask(
+        "What is their enterprise SLA uptime guarantee?",
+        session_id="sess-5",
+    )
+    assert gap.answerable is False
+
+
 def test_research_chat_endpoints(site, env, monkeypatch):
     from fastapi.testclient import TestClient
 
