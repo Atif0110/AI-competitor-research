@@ -14,3 +14,4 @@ frontend/dist/
 eval/artifacts/*.json
 .snapshots/
 .kilo/
+.vscode/
