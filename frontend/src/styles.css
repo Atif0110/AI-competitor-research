@@ -46,11 +46,21 @@
   --radius-sm: 9px;
 
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
   --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --accent-hi: #f5cd85;
+
+  /* layered shadows read as real depth; a single flat shadow reads as default */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
   --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --shadow-accent: 0 10px 30px -10px rgba(232, 181, 99, 0.55);
+
+  /* the sheen along the top edge of a raised surface */
+  --edge-light: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 *,
@@ -73,8 +83,19 @@ body {
   font-size: 14px;
   line-height: 1.55;
   color: var(--text-2);
-  background: var(--bg);
+  /* A faint mesh of light behind the content. It sits under every opaque
+     surface, so it adds atmosphere without ever tinting content. */
+  background:
+    radial-gradient(900px 620px at 88% -12%, rgba(232, 181, 99, 0.07), transparent 62%),
+    radial-gradient(760px 560px at 4% 8%, rgba(122, 165, 232, 0.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 h1,
@@ -158,6 +179,19 @@ textarea {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100vh;
+  position: relative;
+}
+
+/* Grain overlay. Fixed, non-interactive, and behind all content: it removes
+   the "flat digital plastic" look without a single element overlapping. */
+.shell::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.4;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
 }
 
 /* ---- left rail ---- */
@@ -171,6 +205,7 @@ textarea {
   position: sticky;
   top: 0;
   height: 100vh;
+  z-index: 10;
 }
 
 .rail-brand {
@@ -186,12 +221,14 @@ textarea {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: var(--accent);
+  background: linear-gradient(145deg, var(--accent-hi), var(--accent) 70%);
   color: var(--accent-ink);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: -0.02em;
   flex: none;
+  box-shadow: 0 6px 18px -6px rgba(232, 181, 99, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .rail-name {
@@ -235,10 +272,10 @@ textarea {
 }
 
 .rail-list button.is-active {
-  background: var(--surface-3);
+  background: linear-gradient(90deg, var(--accent-wash), transparent 88%), var(--surface-3);
   color: var(--text);
   font-weight: 500;
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent), var(--shadow-sm);
 }
 
 .rail-list button.is-active svg {
@@ -316,6 +353,8 @@ textarea {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .topbar {
@@ -378,6 +417,19 @@ textarea {
   flex-wrap: wrap;
   padding-bottom: 22px;
   border-bottom: 1px solid var(--line);
+  position: relative;
+}
+
+/* the accent rule that draws the eye to the page title */
+.masthead::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 76px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent);
 }
 
 .masthead-text {
@@ -396,11 +448,23 @@ textarea {
 }
 
 .masthead h1 {
-  font-size: 34px;
-  line-height: 1.1;
-  letter-spacing: -0.035em;
-  font-weight: 600;
+  font-family: var(--display);
+  font-size: 38px;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  font-weight: 700;
   color: var(--text);
+}
+
+/* The accent wash is applied only where background-clip: text works, so a
+   browser without it shows solid white text instead of nothing at all. */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .masthead h1 {
+    background: linear-gradient(96deg, var(--text) 32%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
 }
 
 .masthead p {
@@ -430,30 +494,42 @@ textarea {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
-    color 0.15s var(--ease), opacity 0.15s var(--ease);
+  white-space: nowrap;
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease),
+    color 0.18s var(--ease), opacity 0.18s var(--ease),
+    box-shadow 0.22s var(--ease), transform 0.12s var(--ease);
 }
 
 .btn-primary {
   border: 1px solid transparent;
-  background: var(--accent);
+  background: linear-gradient(180deg, var(--accent-hi), var(--accent));
   color: var(--accent-ink);
+  box-shadow: var(--shadow-accent), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #f0c078;
+  background: linear-gradient(180deg, #fbd493, var(--accent-hi));
+  box-shadow: 0 14px 36px -10px rgba(232, 181, 99, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: var(--shadow-accent), inset 0 2px 4px rgba(0, 0, 0, 0.18);
 }
 
 .btn-ghost {
-  border: 1px solid var(--line);
-  background: transparent;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
   color: var(--text-2);
+  box-shadow: var(--shadow-sm);
 }
 
 .btn-ghost:hover {
-  border-color: var(--line-strong);
+  border-color: var(--accent-line);
   color: var(--text);
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 .btn-primary:disabled,
@@ -481,6 +557,11 @@ textarea {
   gap: 4px;
   padding: 16px 18px;
   background: var(--surface-1);
+  transition: background 0.2s var(--ease);
+}
+
+.stat:hover {
+  background: var(--surface-2);
 }
 
 .stat-label {
@@ -533,11 +614,18 @@ textarea {
   flex-direction: column;
   gap: 16px;
   padding: 20px;
-  background: var(--surface-1);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface-1) 62%);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), var(--edge-light);
   min-width: 0;
+  transition: border-color 0.2s var(--ease), box-shadow 0.25s var(--ease),
+    transform 0.25s var(--ease-out);
+}
+
+.panel:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow), var(--edge-light), 0 20px 44px -24px rgba(0, 0, 0, 0.8);
 }
 
 .panel-form {
@@ -848,6 +936,7 @@ select {
 .clickable:hover td {
   background: var(--surface-2);
   color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .align-right {
@@ -1426,6 +1515,69 @@ select {
   font-size: 12.5px;
   color: var(--text-2);
   overflow-wrap: anywhere;
+}
+
+/* ==================================================================
+   loading skeletons
+   ================================================================== */
+.skeleton-list,
+.skeleton-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-table {
+  gap: 0;
+}
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 22px;
+}
+
+.skeleton-table .skeleton-row {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.skeleton {
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-3) 40%,
+    var(--surface-2) 80%
+  );
+  background-size: 220% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.skeleton-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.skeleton-text,
+.skeleton-cell {
+  width: 60%;
+  height: 11px;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 140% 0;
+  }
+
+  to {
+    background-position: -40% 0;
+  }
 }
 
 /* ==================================================================

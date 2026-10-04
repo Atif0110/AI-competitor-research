@@ -439,7 +439,14 @@ function Dashboard({ runId, onNavigate, health }) {
             </button>
           </div>
           {loading ? (
-            <p className="muted">Loading…</p>
+            <div className="skeleton-list" aria-busy="true" aria-label="Loading signals">
+              {[0, 1, 2, 3].map((row) => (
+                <div className="skeleton-row" key={row}>
+                  <span className="skeleton skeleton-dot" />
+                  <span className="skeleton skeleton-text" style={{ width: `${52 + row * 9}%` }} />
+                </div>
+              ))}
+            </div>
           ) : events.length ? (
             <ul className="feed">
               {events.map((event, index) => (
@@ -933,7 +940,16 @@ function Evidence({ runId, notify }) {
         </div>
 
         {loading ? (
-          <p className="muted">Loading…</p>
+          <div className="skeleton-table" aria-busy="true" aria-label="Loading observations">
+            {[0, 1, 2, 3, 4, 5].map((row) => (
+              <div className="skeleton-row" key={row}>
+                <span className="skeleton skeleton-cell" style={{ width: '22%' }} />
+                <span className="skeleton skeleton-cell" style={{ width: '12%' }} />
+                <span className="skeleton skeleton-cell" style={{ width: '10%' }} />
+                <span className="skeleton skeleton-cell" style={{ width: '16%' }} />
+              </div>
+            ))}
+          </div>
         ) : rows.length ? (
           <table className="table">
             <thead>
