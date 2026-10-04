@@ -12,6 +12,7 @@ import secrets
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, Header, HTTPException, Request
@@ -42,6 +43,25 @@ class ReviewQueryRequest(BaseModel):
     region: Optional[Region] = None
     run_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
     n: int = Field(default=8, ge=1, le=50)
+
+
+class DeepResearchRequest(BaseModel):
+    mode: str = Field(default="url", pattern=r"^(url|topic|compare)$")
+    url: Optional[str] = None
+    topic: Optional[str] = None
+    competitors: list[str] = Field(default_factory=list)
+    question: str = Field(default="", max_length=1000)
+    max_pages: int = Field(default=0, ge=0, le=60)
+    max_depth: int = Field(default=0, ge=0, le=4)
+    use_search: bool = True
+    use_llm: bool = True
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    run_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
+    session_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
+    top_k: Optional[int] = Field(default=None, ge=1, le=25)
 
 
 class ScheduleRequest(BaseModel):
@@ -89,7 +109,11 @@ def _set_job(job_id: str, **updates) -> None:
 def _run_job(job_id: str, target: CompetitorTarget) -> None:
     events: list[dict] = []
     try:
-        _set_job(job_id, status="running", started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat())
+        _set_job(
+            job_id,
+            status="running",
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
         def on_progress(event: dict) -> None:
             events.append(event)
             _set_job(job_id, events=list(events), current_event=event)
@@ -99,6 +123,25 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
     except Exception as exc:
         logger.exception("research job %s failed", job_id)
         _set_job(job_id, status="failed", error=str(exc), events=events)
+
+
+_deep_pipeline_instance = None
+
+
+def _deep_pipeline():
+    """Lazily built deep-research pipeline, shared across requests.
+
+    Rebuilding it per request would re-initialise the document store schema and
+    the LLM client chain on every call.
+    """
+    global _deep_pipeline_instance
+    if _deep_pipeline_instance is None:
+        from app.research.pipeline import DeepResearchPipeline
+
+        _deep_pipeline_instance = DeepResearchPipeline(
+            store=_store, llm=_pipeline.extractor.client
+        )
+    return _deep_pipeline_instance
 
 
 def create_app():
@@ -127,6 +170,7 @@ def create_app():
         client = _pipeline.extractor.client
         return {
             "status": "ok",
+            "version": app.version,
             "mode": "demo" if settings.demo_mode else "live",
             "demo_mode": settings.demo_mode,
             "storage_backend": "postgresql" if _store._postgres else "sqlite",
@@ -134,12 +178,27 @@ def create_app():
             "scheduler": settings.scheduler_autostart,
             "auth_required": bool(settings.api_key_required),
             "active_llm_provider": client.provider_name,
-            "llm_provider_chain": [n for n, _ in client._providers],
+            "active_llm_model": client.active_model,
+            "llm_provider_chain": client.chain,
+            "provider_tiers": settings.provider_tiers,
             "llm_models": {
+                "apinex": settings.apinex_model if settings.apinex_api_key else None,
                 "openai": settings.openai_model if settings.openai_api_key else None,
                 "anthropic": settings.anthropic_model if settings.anthropic_api_key else None,
                 "groq": settings.groq_model if settings.groq_api_key else None,
                 "gemini": settings.gemini_model if settings.gemini_api_key else None,
+            },
+            "web_tools": bool(settings.apinex_api_key and settings.apinex_web_tools),
+            "deep_research": {
+                "enabled": settings.deep_llm_enabled,
+                "max_pages": settings.deep_max_pages,
+                "max_depth": settings.deep_max_depth,
+                "search": settings.deep_search_enabled,
+                "chat": {
+                    "top_k": settings.chat_top_k,
+                    "min_relevance": settings.chat_min_relevance,
+                    "min_coverage": settings.chat_min_coverage,
+                },
             },
         }
 
@@ -168,6 +227,81 @@ def create_app():
             raise HTTPException(status_code=404, detail="job not found")
         return {"job_id": job_id, **job}
 
+    # ------------------------------------------------------------------
+    # deep research (url / topic / compare)
+    # ------------------------------------------------------------------
+    @app.post("/research/deep", dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
+    def deep_research(payload: DeepResearchRequest):
+        from app.research.models import ResearchMode, ResearchRequest
+
+        mode = ResearchMode(payload.mode)
+        if mode is ResearchMode.url and not payload.url:
+            raise HTTPException(status_code=422, detail="url is required for mode=url")
+        if mode is ResearchMode.topic and not (payload.topic or payload.question):
+            raise HTTPException(status_code=422, detail="topic is required for mode=topic")
+
+        request = ResearchRequest(
+            mode=mode,
+            url=payload.url,
+            topic=payload.topic,
+            competitors=[c for c in payload.competitors if c][:8],
+            question=payload.question,
+            max_pages=payload.max_pages or None,
+            max_depth=payload.max_depth if payload.max_depth else None,
+            use_search=payload.use_search,
+            use_llm=payload.use_llm,
+        )
+        try:
+            result = _deep_pipeline().run(request)
+        except Exception as exc:
+            logger.exception("deep research failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+        return json.loads(result.model_dump_json())
+
+    @app.get("/research/deep/runs")
+    def deep_research_runs(limit: int = 25):
+        limit = max(1, min(limit, 200))
+        return _deep_pipeline().documents.list_runs(limit=limit)
+
+    @app.get("/research/deep/runs/{run_id}")
+    def deep_research_run(run_id: str):
+        if not is_safe_run_id(run_id):
+            raise HTTPException(status_code=422, detail="invalid run_id")
+        result = _deep_pipeline().load(run_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="research run not found")
+        return json.loads(result.model_dump_json())
+
+    # NOTE: literal /research/chat paths are declared before the parameterised
+    # routes below so "chat" is never read as a session_id.
+    @app.post("/research/chat", dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
+    def research_chat(payload: ChatRequest):
+        from app.research.chat import ResearchChat
+
+        chat = ResearchChat(_deep_pipeline().documents)
+        answer = chat.ask(
+            payload.question,
+            run_id=payload.run_id,
+            session_id=payload.session_id,
+            top_k=payload.top_k,
+        )
+        return json.loads(answer.model_dump_json())
+
+    @app.get("/research/chat/{session_id}")
+    def research_chat_history(session_id: str, limit: int = 100):
+        if not is_safe_run_id(session_id):
+            raise HTTPException(status_code=422, detail="invalid session_id")
+        documents = _deep_pipeline().documents
+        session = documents.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        return {
+            "session_id": session_id,
+            "run_id": session.get("run_id"),
+            "title": session.get("title"),
+            "messages": documents.messages(session_id, limit=max(1, min(limit, 500))),
+        }
+
     @app.get("/offers")
     def offers(product: str | None = None, region: str | None = None, run_id: str | None = None, limit: int = 200):
         try:
@@ -179,12 +313,6 @@ def create_app():
         limit = max(1, min(limit, 1000))
         return [o.model_dump(mode="json") for o in _store.recent_offers(product=product, region=reg, limit=limit, run_id=run_id)]
 
-    @app.get("/evidence/{run_id}")
-    def evidence(run_id: str, limit: int = 50):
-        if not is_safe_run_id(run_id):
-            raise HTTPException(status_code=422, detail="invalid run_id")
-        return _store.evidence_for_run(run_id, limit=max(1, min(limit, 200)))
-
     @app.get("/evidence/content")
     def evidence_content(source_url: HttpUrl, run_id: str | None = None):
         if run_id and not is_safe_run_id(run_id):
@@ -193,6 +321,15 @@ def create_app():
         if content is None:
             raise HTTPException(status_code=404, detail="evidence not found")
         return {"source_url": str(source_url), "run_id": run_id, "content": content}
+
+    # NOTE: declared after /evidence/content on purpose. A literal path
+    # segment must win over the /evidence/{run_id} parameter, otherwise
+    # "content" is read as a run_id and this endpoint becomes unreachable.
+    @app.get("/evidence/{run_id}")
+    def evidence(run_id: str, limit: int = 50):
+        if not is_safe_run_id(run_id):
+            raise HTTPException(status_code=422, detail="invalid run_id")
+        return _store.evidence_for_run(run_id, limit=max(1, min(limit, 200)))
 
     @app.get("/insights/undercut")
     def undercut(region: str | None = None, run_id: str | None = None):

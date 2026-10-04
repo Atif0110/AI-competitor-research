@@ -1,14 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import './deep.css';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const NAV = [
   ['dashboard', 'Overview', 'home'],
   ['run', 'Research', 'scan'],
+  ['deep', 'Deep research', 'compass'],
   ['offers', 'Evidence', 'layers'],
   ['insights', 'Signals', 'spark'],
   ['ask', 'Ask AI', 'message'],
+  ['chat', 'Chat', 'quote'],
   ['reports', 'Reports', 'file'],
 ];
 const REGIONS = ['US', 'UK', 'IN', 'EU', 'JP', 'CA', 'AU', 'SG', 'BR'];
@@ -56,6 +59,9 @@ function Icon({ name, size = 18, stroke = 1.8 }) {
     clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
     database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></>,
     menu: <><path d="M4 6h16M4 12h16M4 18h16"/></>,
+    compass: <><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.2 4.8-4.8 2.2 2.2-4.8z"/></>,
+    quote: <><path d="M9 7H6a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v3"/><path d="M18 7h-3a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v3"/></>,
+    globe: <><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.spark}</svg>;
 }
@@ -67,6 +73,7 @@ function App() {
   const [apiKey, setApiKey] = useState(localStorage.getItem('acr_api_key') || '');
   const [job, setJob] = useState(null);
   const [runId, setRunId] = useState(null);
+  const [deepRun, setDeepRun] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [intro, setIntro] = useState(true);
@@ -129,9 +136,11 @@ function App() {
       <div className="page-wrap">
         {page === 'dashboard' && <Dashboard setPage={setPage} runId={runId} refresh={refresh} health={health}/>}
         {page === 'run' && <RunPage startRun={startRun} job={job} runId={runId} setPage={setPage}/>}
+        {page === 'deep' && <DeepResearch deepRun={deepRun} setDeepRun={setDeepRun} onChat={() => setPage('chat')}/>}
         {page === 'offers' && <Offers runId={runId}/>}
         {page === 'insights' && <Insights runId={runId}/>}
         {page === 'ask' && <Ask runId={runId}/>}
+        {page === 'chat' && <ResearchChat runId={deepRun?.run_id || null} runTitle={deepRun?.plan?.subject || deepRun?.question}/>}
         {page === 'reports' && <Reports/>}
       </div>
       {toast && <div className="toast"><span className="toast-icon">!</span><span>{toast}</span><button onClick={() => setToast('')}>×</button></div>}
@@ -292,5 +301,280 @@ function Reports() {
 }
 
 function Empty({ title = 'Nothing here yet', text = '', action, onAction }) { return <div className="empty-state"><div className="empty-icon"><Icon name="spark" size={18}/></div><div><b>{title}</b><p>{text}</p>{action && <button className="link-btn" onClick={onAction}>{action}<Icon name="arrow" size={14}/></button>}</div></div>; }
+
+// ------------------------------------------------------------------
+// deep research
+// ------------------------------------------------------------------
+const DEEP_MODES = [['url', 'URL', 'globe'], ['topic', 'Topic', 'spark'], ['compare', 'Compare', 'layers']];
+const DEEP_TABS = [['report', 'Report'], ['findings', 'Findings'], ['gaps', 'Gaps'], ['pages', 'Pages'], ['sources', 'Sources']];
+
+function Markdown({ text }) {
+  const blocks = useMemo(() => parseMarkdown(text || ''), [text]);
+  return <div className="markdown">{blocks.map((block, i) => {
+    if (block.type === 'heading') {
+      const Tag = block.level === 1 ? 'h2' : block.level === 2 ? 'h3' : 'h4';
+      return <Tag key={i}>{inline(block.text)}</Tag>;
+    }
+    if (block.type === 'list') return <ul key={i}>{block.items.map((item, j) => <li key={j}>{inline(item)}</li>)}</ul>;
+    if (block.type === 'quote') return <blockquote key={i}>{inline(block.text)}</blockquote>;
+    return <p key={i}>{inline(block.text)}</p>;
+  })}</div>;
+}
+
+// Renders the subset of Markdown the research report actually emits.
+function parseMarkdown(text) {
+  const out = [];
+  let list = null;
+  const flush = () => { if (list) { out.push(list); list = null; } };
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trim();
+    if (!line) { flush(); continue; }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) { flush(); out.push({ type: 'heading', level: heading[1].length, text: heading[2] }); continue; }
+    const bullet = line.match(/^[-*+]\s+(.*)$/);
+    if (bullet) { if (!list) list = { type: 'list', items: [] }; list.items.push(bullet[1]); continue; }
+    if (/^>\s?/.test(line)) { flush(); out.push({ type: 'quote', text: line.replace(/^>\s?/, '') }); continue; }
+    flush();
+    out.push({ type: 'para', text: line });
+  }
+  flush();
+  return out;
+}
+
+// Turns **bold**, `code` and [S1] citation markers into elements.
+function inline(text) {
+  const parts = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`|\[(S\d+)\]|\[[^\]]+\]\((https?:\/\/[^)]+)\))/g;
+  let last = 0;
+  let match;
+  while ((match = re.exec(text))) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const token = match[0];
+    if (token.startsWith('**')) parts.push(<b key={match.index}>{token.slice(2, -2)}</b>);
+    else if (token.startsWith('`')) parts.push(<code key={match.index}>{token.slice(1, -1)}</code>);
+    else if (match[3]) parts.push(<a key={match.index} href={match[3]} target="_blank" rel="noreferrer">{token.slice(1, token.indexOf(']('))}</a>);
+    else parts.push(<span className="cite-chip" key={match.index} title="Source reference">{match[2]}</span>);
+    last = match.index + token.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function DeepResearch({ deepRun, setDeepRun, onChat }) {
+  const [mode, setMode] = useState('url');
+  const [url, setUrl] = useState('');
+  const [topic, setTopic] = useState('');
+  const [rivals, setRivals] = useState('');
+  const [question, setQuestion] = useState('');
+  const [pages, setPages] = useState(8);
+  const [useSearch, setUseSearch] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [tab, setTab] = useState('report');
+
+  const run = async (e) => {
+    e?.preventDefault();
+    setBusy(true); setError('');
+    try {
+      const payload = {
+        mode,
+        url: mode === 'url' ? url.trim() : null,
+        topic: mode === 'topic' ? topic.trim() : null,
+        competitors: mode === 'compare' ? rivals.split(',').map(s => s.trim()).filter(Boolean) : [],
+        question: question.trim(),
+        max_pages: pages,
+        use_search: useSearch,
+      };
+      const result = await api('/research/deep', { method: 'POST', body: JSON.stringify(payload) });
+      setDeepRun(result);
+      setTab('report');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const coverage = deepRun?.coverage;
+  const citations = deepRun?.citations || [];
+
+  return <div className="page-stack">
+    <div className="page-intro">
+      <div>
+        <div className="eyebrow accent">DEEP RESEARCH</div>
+        <h2>Crawl a site. Read it properly.</h2>
+        <p>Budgeted crawling, heading-aware extraction and cited reporting. Every line of the report points back to the page it came from.</p>
+      </div>
+    </div>
+
+    <section className="surface deep-form">
+      <div className="mode-tabs">{DEEP_MODES.map(([id, label, icon]) => <button key={id} className={mode === id ? 'active' : ''} onClick={() => setMode(id)}><Icon name={icon} size={16}/>{label}</button>)}</div>
+      <form onSubmit={run}>
+        {mode === 'url' && <Field label="Site URL" value={url} onChange={setUrl} placeholder="https://acme.com" type="url"/>}
+        {mode === 'topic' && <Field label="Topic" value={topic} onChange={setTopic} placeholder="AI note-taking apps pricing"/>}
+        {mode === 'compare' && <><Field label="Subject" value={topic} onChange={setTopic} placeholder="Notion"/><Field label="Competitors (comma separated)" value={rivals} onChange={setRivals} placeholder="Coda, Obsidian, Anytype"/></>}
+        <label className="field"><span>What should the research answer?</span><textarea rows="3" value={question} onChange={e => setQuestion(e.target.value)} placeholder="What does it charge, what limits apply, and what are the trial terms?"/></label>
+        <div className="deep-options">
+          <label className="slider-field"><span>Page budget <b>{pages}</b></span><input type="range" min="2" max="30" value={pages} onChange={e => setPages(Number(e.target.value))}/></label>
+          <label className="toggle-field"><input type="checkbox" checked={useSearch} onChange={e => setUseSearch(e.target.checked)}/><span>Web search for extra sources</span></label>
+        </div>
+        {error && <div className="inline-error">{error}</div>}
+        <div className="deep-actions">
+          <button className="primary" disabled={busy}>{busy ? <><span className="loader-dot"/> Researching…</> : <><Icon name="compass" size={16}/> Start deep research</>}</button>
+          <span className="hint">Runs synchronously. Larger budgets take longer.</span>
+        </div>
+      </form>
+    </section>
+
+    {deepRun && <>
+      <div className="deep-stats">
+        <Metric icon="layers" label="Pages" value={coverage?.pages_fetched ?? 0} hint={`${coverage?.pages_failed || 0} failed`}/>
+        <Metric icon="file" label="Sections" value={coverage?.sections ?? 0} hint={`${coverage?.facts || 0} facts`}/>
+        <Metric icon="spark" label="Status" value={pretty(deepRun.status)} hint={`${coverage?.characters || 0} chars`}/>
+        <Metric icon="clock" label="Duration" value={`${deepRun.duration_s ?? 0}s`} hint={coverage?.search_backend ? `search: ${coverage.search_backend}` : 'no search'}/>
+      </div>
+
+      <section className="surface deep-result">
+        <div className="result-head">
+          <div className="tab-row">{DEEP_TABS.map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'gaps' && deepRun.gaps?.length ? <em>{deepRun.gaps.length}</em> : null}{id === 'sources' && citations.length ? <em>{citations.length}</em> : null}</button>)}</div>
+          <button className="secondary" onClick={onChat}><Icon name="message" size={15}/> Ask this run</button>
+        </div>
+
+        {tab === 'report' && (deepRun.report_markdown
+          ? <Markdown text={deepRun.report_markdown}/>
+          : <Empty title="No report produced" text="The run finished without usable evidence."/>)}
+
+        {tab === 'findings' && (deepRun.findings?.length
+          ? <ul className="finding-list">{deepRun.findings.map((f, i) => <li key={i}>{inline(String(f))}</li>)}</ul>
+          : <Empty title="No findings" text="No evidence-backed statements were captured."/>)}
+
+        {tab === 'gaps' && (deepRun.gaps?.length
+          ? <ul className="gap-list">{deepRun.gaps.map((g, i) => <li key={i}><b>{g.question}</b><span>{g.reason}</span></li>)}</ul>
+          : <Empty title="No open questions" text="Every planned question found supporting evidence."/>)}
+
+        {tab === 'pages' && (deepRun.pages?.length
+          ? <div className="page-table">{deepRun.pages.map(p => <div className="page-row" key={p.url}><span className="cite-chip">{p.source_ref}</span><a href={p.url} target="_blank" rel="noreferrer">{short(p.url, 58)}<Icon name="external" size={13}/></a><em>{pretty(p.page_type)}</em><i className={`pill ${p.status}`}>{p.status}</i><small>{(p.chars || 0).toLocaleString()} chars</small></div>)}</div>
+          : <Empty title="No pages visited" text="The crawl frontier stayed empty."/>)}
+
+        {tab === 'sources' && (citations.length
+          ? <div className="source-list">{citations.map(c => <a key={c.ref} href={c.url} target="_blank" rel="noreferrer"><span className="cite-chip">{c.ref}</span><div><b>{c.title || c.url}</b><small>{c.heading || pretty(c.url)}</small></div><Icon name="external" size={14}/></a>)}</div>
+          : <Empty title="No sources" text="Nothing citable was captured."/>)}
+      </section>
+    </>}
+  </div>;
+}
+
+// ------------------------------------------------------------------
+// research chat
+// ------------------------------------------------------------------
+const CHAT_STARTERS = [
+  'What does it charge per month?',
+  'Which limits and guarantees are stated?',
+  'What did customers complain about?',
+  'What is still unclear from the evidence?',
+];
+
+function ResearchChat({ runId, runTitle }) {
+  const [runs, setRuns] = useState([]);
+  const [activeRun, setActiveRun] = useState(runId || '');
+  const [sessionId, setSessionId] = useState(() => localStorage.getItem('acr_chat_session') || '');
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api('/research/deep/runs').then(setRuns).catch(() => {}); }, []);
+  useEffect(() => { if (runId) setActiveRun(runId); }, [runId]);
+
+  const loadSession = async (id) => {
+    if (!id) { setMessages([]); return; }
+    try {
+      const data = await api(`/research/chat/${id}`);
+      setMessages((data.messages || []).map(m => ({ role: m.role, content: m.content, citations: safeJson(m.citations) })));
+    } catch { setMessages([]); }
+  };
+
+  useEffect(() => { loadSession(sessionId); }, [sessionId]);
+
+  const send = async (e) => {
+    e?.preventDefault();
+    const question = text.trim();
+    if (!question || busy) return;
+    setBusy(true);
+    setText('');
+    setMessages(prev => [...prev, { role: 'user', content: question, citations: [] }]);
+    try {
+      const answer = await api('/research/chat', { method: 'POST', body: JSON.stringify({ question, run_id: activeRun || null, session_id: sessionId || null }) });
+      if (answer.session_id && answer.session_id !== sessionId) {
+        localStorage.setItem('acr_chat_session', answer.session_id);
+        setSessionId(answer.session_id);
+      }
+      setMessages(prev => [...prev, { role: 'assistant', content: answer.message, citations: answer.citations || [], answerable: answer.answerable }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: err.message, citations: [], answerable: false }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startNew = () => {
+    localStorage.removeItem('acr_chat_session');
+    setSessionId('');
+    setMessages([]);
+  };
+
+  const selected = runs.find(r => r.run_id === activeRun);
+
+  return <div className="page-stack">
+    <div className="page-intro">
+      <div>
+        <div className="eyebrow accent">RESEARCH CHAT</div>
+        <h2>Interrogate the evidence.</h2>
+        <p>Answers are assembled only from sections a run actually captured, and each claim keeps its source marker.</p>
+      </div>
+    </div>
+
+    <section className="surface chat-surface">
+      <aside className="chat-rail">
+        <div className="chat-rail-head"><span>Scope</span><button className="link-btn" onClick={startNew}>New chat</button></div>
+        <select className="run-select" value={activeRun} onChange={e => setActiveRun(e.target.value)}>
+          <option value="">Latest research run</option>
+          {runs.map(r => <option key={r.run_id} value={r.run_id}>{r.run_id} · {pretty(r.status)}</option>)}
+        </select>
+        <div className="chat-scope">
+          {selected ? <>
+            <b>{runTitle || selected.question || selected.plan?.subject || selected.run_id}</b>
+            <small>{selected.coverage?.pages_fetched || 0} pages · {selected.coverage?.sections || 0} sections · {selected.coverage?.facts || 0} facts</small>
+          </> : <small>{runs.length ? 'Using the most recent run.' : 'Run deep research first to build a corpus.'}</small>}
+        </div>
+      </aside>
+
+      <div className="chat-main">
+        <div className="chat-log">
+          {messages.length === 0 && <div className="chat-welcome">
+            <div className="ask-orb"><Icon name="message" size={26}/></div>
+            <h3>Ask about the captured evidence</h3>
+            <p>Questions the evidence cannot answer are reported as gaps rather than guessed.</p>
+            <div className="prompt-chips">{CHAT_STARTERS.map(s => <button key={s} onClick={() => setText(s)}>{s}</button>)}</div>
+          </div>}
+          {messages.map((m, i) => <div key={i} className={`chat-msg ${m.role}`}>
+            <div className="chat-bubble">{inline(m.content)}</div>
+            {!!m.citations?.length && <div className="chat-cites">{m.citations.map((c, j) => <a key={j} href={c.url} target="_blank" rel="noreferrer"><span className="cite-chip">{c.ref}</span>{short(c.heading || c.title || c.url, 46)}<Icon name="external" size={12}/></a>)}</div>}
+            {m.answerable === false && <span className="chat-flag">evidence gap</span>}
+          </div>)}
+          {busy && <div className="chat-msg assistant"><div className="chat-bubble"><span className="loader-dot"/> Reading the run…</div></div>}
+        </div>
+        <form className="chat-composer" onSubmit={send}>
+          <textarea rows="2" value={text} onChange={e => setText(e.target.value)} placeholder={runs.length ? 'Ask a question about the selected run…' : 'Run deep research first to build a corpus…'} disabled={busy}/>
+          <button className="primary" disabled={busy || !text.trim()}><Icon name="arrow" size={15}/></button>
+        </form>
+      </div>
+    </section>
+  </div>;
+}
+
+function safeJson(value) {
+  if (Array.isArray(value)) return value;
+  try { return JSON.parse(value || '[]'); } catch { return []; }
+}
 
 createRoot(document.getElementById('root')).render(<App />);

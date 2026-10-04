@@ -204,6 +204,7 @@ class EventAlert(BaseModel):
 class RunMetrics(BaseModel):
     """Per-run validation metrics (resume numbers)."""
     run_id: str
+    started_at: str = ""
     mode: str
     target_company: str
     competitors: int

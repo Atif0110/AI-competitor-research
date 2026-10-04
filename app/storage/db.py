@@ -111,6 +111,9 @@ def _snapshot_bucket(dt) -> str:
     return dt.strftime("%Y-%m-%dT%H")
 
 
+_MAX_EVIDENCE_CHARS = 60_000
+
+
 def _offer_key(offer: ProductOffer) -> str:
     raw = "|".join([
         canonical_url(offer.canonical_url or offer.url),
@@ -160,8 +163,16 @@ class OfferStore:
             from psycopg.rows import dict_row
             conn = psycopg.connect(self._url, row_factory=dict_row)
         else:
-            conn = sqlite3.connect(self._path)
+            # WAL + a real busy timeout so a background research job writing
+            # evidence cannot make concurrent API reads fail with
+            # "database is locked".
+            conn = sqlite3.connect(self._path, timeout=30.0)
             conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=30000")
+            except sqlite3.DatabaseError:
+                logger.debug("could not apply sqlite pragmas", exc_info=True)
         try:
             yield conn
             conn.commit()
@@ -252,12 +263,19 @@ class OfferStore:
 
     # ---------------- raw evidence ----------------
     def save_evidence(self, run_id: str, source_url: str, content: str) -> None:
-        h = hashlib.sha256(content.encode()).hexdigest()
+        """Persist scraped evidence.
+
+        The stored payload is truncated to ``_MAX_EVIDENCE_CHARS`` and the
+        content hash is computed over exactly what is stored, so a caller can
+        always verify the hash against the evidence the system retained.
+        """
+        stored = (content or "")[:_MAX_EVIDENCE_CHARS]
+        h = hashlib.sha256(stored.encode()).hexdigest()
         with self._connect() as conn:
             self._execute(conn,
                 "INSERT INTO raw_evidence (run_id, source_url, content_hash, scraped_at, content) "
                 "VALUES (?,?,?,?,?) ON CONFLICT(source_url, content_hash) DO NOTHING",
-                (run_id, source_url, h, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), content[:60000]))
+                (run_id, source_url, h, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), stored))
 
     def evidence_for_run(self, run_id: str, limit: int = 20) -> List[dict]:
         with self._connect() as conn:
@@ -383,3 +401,35 @@ class OfferStore:
 def _row_to_offer(r) -> ProductOffer:
     payload = {k: r[k] for k in r.keys() if k != "id"}
     return ProductOffer.model_validate(payload)
+
+
+def _parse_date(value) -> Optional[Any]:
+    """Tolerant date parse for stored review dates.
+
+    Review dates come from scraped pages and LLM output, so the same row can
+    contain ISO dates, datetimes or free-form strings. One unparseable value
+    must never take down the whole review corpus.
+    """
+    from datetime import date as _date, datetime as _datetime
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, _datetime):
+        return value.date()
+    if isinstance(value, _date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    for candidate in (text, text.replace("Z", "+00:00")):
+        try:
+            return _datetime.fromisoformat(candidate).date()
+        except ValueError:
+            pass
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d %b %Y", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return _datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    logger.debug("unparseable review date: %r", text)
+    return None

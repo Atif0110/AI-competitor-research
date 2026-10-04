@@ -1,10 +1,12 @@
 # AI Competitor Research
 
-**Evidence-backed competitive intelligence across products, prices, regions, and customer reviews.**
+**Evidence-backed competitive intelligence across products, prices, regions, and customer reviews — plus a deep research engine and chat grounded in cited page evidence.**
 
 AI Competitor Research turns a target company and competitor set into a repeatable research workflow:
 
 **Discover → Region Fan-out → Geo-aware Scrape → Structured Extraction → Validation → Storage → Competitive Insights → Evidence-backed RAG → Reports**
+
+It also ships a second, independent path for non-vague research on a **URL, topic, or comparison set**: a budgeted crawler with heading-aware extraction, planned sub-questions, a fully cited Markdown report, explicit research gaps, and chat that answers only from the evidence a run captured. See [Deep Research Engine](#deep-research-engine).
 
 The project is designed as an engineering system rather than a simple prompt-based demo. It combines automated discovery, web scraping, structured LLM extraction, validation, evidence retention, persistent storage, cross-run analysis, review intelligence, reporting, and a React/FastAPI application boundary.
 
@@ -44,10 +46,9 @@ Target + Competitors
         ▼
  Structured LLM Extraction
         │
-        ├── Gemini
-        ├── Groq
-        ├── OpenAI
-        ├── Anthropic
+        ├── APInex (free tier)
+        ├── Groq / Gemini (free tier)
+        ├── Anthropic / OpenAI
         └── Demo provider
         │
         ▼
@@ -63,19 +64,32 @@ Evidence + Observation Storage
         ├── Cross-run Changes
         ├── Review RAG
         └── Reports / Alerts
+
+  ── in parallel: the deep research engine ──
+  URL / topic / compare → plan → crawl → sections + facts →
+  cited report + gaps + retrievable evidence + grounded chat
 ```
 
 ## Key Capabilities
 
-### Multi-provider LLM routing
+### Free-tier-first multi-provider LLM routing
 
-The application supports multiple LLM providers through a centralized provider router:
+The application routes every model call through a single provider chain that prefers **free-tier providers** and only falls through to paid providers when a key is actually configured:
 
-- Google Gemini
-- OpenAI / GPT
-- Anthropic / Claude
-- Groq
-- Deterministic demo provider
+```text
+APInex (free models) → Groq (free tier) → Gemini (free tier) → Anthropic / OpenAI → demo
+```
+
+Providers in order:
+
+- **APInex** — OpenAI-compatible gateway (`https://apinex.bond/v1`). Free model IDs include
+  `free/all`, `free/gpt-6-luna`, `free/gpt-5.6-luna`, `free/claude-sonnet-4.6`,
+  `free/gemini-3.8-flash`, `free/deepseek-v4.1-flash`, `free/glm-5.3-flash`, `free/kimi-k3`.
+  Set `APINEX_API_KEY` to enable it; `APINEX_WEB_TOOLS=true` additionally exposes its
+  `/tools/web/search`, `/tools/web/contents` and `/tools/web/research` endpoints to the crawler.
+- **Groq** and **Google Gemini** free tiers
+- **Anthropic** / **OpenAI** (paid, only used when a key is present)
+- Deterministic demo provider (no key, no network, fully offline)
 
 Provider selection is controlled through `LLM_PROVIDER`.
 
@@ -83,27 +97,28 @@ Supported modes include:
 
 | Configuration | Behavior |
 |---|---|
+| `apinex` | APInex first |
 | `gemini` | Gemini first |
 | `groq` | Groq first |
 | `openai` | OpenAI first |
 | `anthropic` | Anthropic first |
 | `demo` | Deterministic offline provider |
-| `auto` | Select from configured providers |
+| `auto` | Walk the free-first chain, skipping unconfigured providers |
 
-When fallback providers are configured, the router can move to another configured provider when the current provider is unavailable.
+When fallback providers are configured, the router moves to the next provider when the current one fails, and puts a provider into a per-provider cooldown on quota/rate-limit responses so it is not retried immediately.
 
-Provider fallback includes cooldown-based failover so a temporarily unavailable provider does not have to be selected repeatedly.
+**No paid usage happens implicitly.** A provider only joins the chain when its key is configured; with no keys at all the system runs fully offline on the deterministic provider.
 
 Model names and provider-compatible base URLs are configurable through environment variables.
 
 The `/health` endpoint exposes:
 
-- active provider
-- resolved provider chain
-- configured model names
+- active provider and model
+- resolved provider chain and which providers are in cooldown
+- configured model names per provider (keys are never exposed)
+- provider tiers (`free` / `paid`)
 - application mode
-
-It does not expose API secrets.
+- deep-research budgets and chat retrieval settings
 
 ### Region-aware Competitive Research
 
@@ -378,6 +393,73 @@ The scheduler can be configured through the application/API rather than requirin
 The current scheduler and research job registry are designed around a single API process.
 
 A horizontally scaled production deployment should move job state and scheduling responsibilities to durable/distributed infrastructure.
+
+---
+
+## Deep Research Engine
+
+Beyond the structured competitor pipeline, the application includes a second engine for **non-vague, evidence-backed research on a URL, a topic, or a comparison set**.
+
+```text
+Request (url | topic | compare)
+        │
+        ▼
+   Plan ────────── objective, subject, sub-questions, search queries, page types
+        │           (LLM-assisted when a provider is available, deterministic otherwise)
+        ▼
+   Crawl ───────── budgeted: max pages, max depth, per-host caps, relevance-ranked
+        │           frontier, robots-aware, retry/backoff, optional proxies
+        ▼
+   Extract ─────── HTML → heading-aware blocks → text + Markdown
+        │           → sections (heading-anchored) → facts (values + quotes)
+        ▼
+   Store ────────── runs, pages, sections, facts, citations; SQLite/FTS5 or PostgreSQL/tsvector
+        │
+        ▼
+   Synthesize ───── cited Markdown report, findings, and explicit research gaps
+```
+
+What makes the output "deep" rather than vague:
+
+- **Every claim is cited.** Report lines and facts carry `[S#]` markers resolved against a
+  citation registry, and failed pages still get a reference so gaps stay auditable.
+- **Questions are planned up front** and every planned question is answered or reported as a
+  gap with a reason. A question with no supporting evidence is never silently dropped.
+- **Evidence is retrievable, not just stored.** Sections are chunked with overlap and indexed
+  (FTS5 / tsvector) so chat and follow-up queries can find them again.
+- **Extraction works with no model at all.** Prices, limits, percentages and dates are pulled
+  deterministically, so the system stays useful on the free/offline path.
+
+Run budgets are controlled by `DEEP_MAX_PAGES`, `DEEP_MAX_DEPTH`, `DEEP_PER_HOST_DELAY`,
+`DEEP_PAGE_CHAR_BUDGET`, `DEEP_SECTION_MIN_CHARS`, `DEEP_CHUNK_CHARS` and `DEEP_CHUNK_OVERLAP`.
+
+`ResearchStatus.partial` is reserved for runs with a genuine coverage shortfall — a single 404
+does not downgrade a run, and `coverage` always records what failed.
+
+### API
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /research/deep` | Run url / topic / compare research, returns the full result with report, findings, gaps, citations and coverage |
+| `GET /research/deep/runs` | Recent research runs for the UI |
+| `GET /research/deep/runs/{run_id}` | Reload a stored run from the database |
+
+## Research Chat
+
+Chat answers questions **only** from the evidence a research run captured:
+
+- Retrieval ranks the run's sections, with a fact-level fallback for values captured as facts.
+- Answers are assembled from retrieved passages and keep their `[S#]` markers; resolved
+  citations are returned with the answer.
+- When the evidence does not cover the question, the engine says so instead of guessing. With no
+  model available it enforces a vocabulary-coverage threshold (`CHAT_MIN_COVERAGE`) before it is
+  allowed to answer at all.
+- History is persisted per session (`CHAT_HISTORY_TURNS` of context carried forward).
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /research/chat` | Ask a question about a run, returns answer, citations and answerability |
+| `GET /research/chat/{session_id}` | Retrieve a stored chat session |
 
 ---
 

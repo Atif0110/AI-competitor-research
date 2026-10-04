@@ -121,18 +121,29 @@ class Pipeline:
     # CHECKPOINTS
     # ------------------------------------------------------------------
 
-    def _checkpoint(self, run_id: str) -> set:
-        p = (
-            Path(settings.vector_store_dir)
+    def _checkpoint_path(
+        self,
+        run_id: str,
+    ) -> Path:
+        return (
+            Path(settings.checkpoint_dir)
             / f"checkpoint_{run_id}.json"
         )
 
+    def _checkpoint(self, run_id: str) -> set:
+        p = self._checkpoint_path(run_id)
+
         if p.exists():
             try:
-                return set(
-                    json.loads(
-                        p.read_text()
-                    )
+                data = json.loads(
+                    p.read_text()
+                )
+                if isinstance(data, list):
+                    return set(data)
+                logger.warning(
+                    "checkpoint %s has an unexpected shape — "
+                    "starting fresh",
+                    run_id,
                 )
             except (
                 json.JSONDecodeError,
@@ -151,16 +162,63 @@ class Pipeline:
         run_id: str,
         done: set,
     ) -> None:
-        p = (
-            Path(settings.vector_store_dir)
-            / f"checkpoint_{run_id}.json"
-        )
+        p = self._checkpoint_path(run_id)
 
-        p.write_text(
-            json.dumps(
-                sorted(done)
+        try:
+            p.parent.mkdir(
+                parents=True,
+                exist_ok=True,
             )
-        )
+            p.write_text(
+                json.dumps(
+                    sorted(done)
+                )
+            )
+        except OSError as exc:
+            # A failed checkpoint must never abort a run that already has
+            # scraped and stored real evidence.
+            logger.warning(
+                "could not persist checkpoint %s: %s",
+                run_id,
+                exc,
+            )
+        else:
+            self._prune_checkpoints()
+
+    @staticmethod
+    def _prune_checkpoints(
+        keep: int = 20,
+    ) -> None:
+        """Bound checkpoint growth: keep the most recent runs only.
+
+        Checkpoints make a re-run of the same run_id resumable, so they are
+        kept for recent runs and old ones are removed to stop unbounded disk
+        growth in a long-lived deployment.
+        """
+        directory = Path(settings.checkpoint_dir)
+
+        try:
+            files = sorted(
+                (
+                    f
+                    for f in directory.glob("checkpoint_*.json")
+                    if f.is_file()
+                ),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return
+
+        for stale in files[max(1, keep):]:
+            try:
+                stale.unlink()
+            except OSError:
+                logger.debug(
+                    "could not prune checkpoint %s",
+                    stale,
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # DISCOVERY + FOCUS FILTERING
@@ -813,6 +871,7 @@ class Pipeline:
 
         return RunMetrics(
             run_id=run_id,
+            started_at=started_at,
             mode=(
                 "demo"
                 if demo

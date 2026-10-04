@@ -6,8 +6,11 @@ __pycache__/
 data/*.db
 data/*.sqlite
 data/vectors/
+data/checkpoints/
 data/reports/
 data/live_runs/
 frontend/node_modules/
 frontend/dist/
 eval/artifacts/*.json
+.snapshots/
+.kilo/

@@ -16,6 +16,7 @@ from typing import List, Optional
 from app.config import settings
 from app.discovery import canonical_url
 from app.schemas import Review
+from app.storage.db import _parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,39 @@ def _review_id(review: Review) -> str:
     raw = "|".join([canonical_url(review.source_url), review.product_name,
                     review.region.value, review.review_text])
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def _row_to_review(row) -> Optional[Review]:
+    """Build a Review from a storage row, skipping unusable rows.
+
+    Review dates are third-party data: a single unparseable date must not
+    raise and take down an entire search result set.
+    """
+    try:
+        return Review(
+            product_name=row["product_name"],
+            region=row["region"],
+            rating=row["rating"],
+            review_text=row["review_text"],
+            source_url=row["source_url"],
+            competitor=row["competitor"],
+            reviewer=row["reviewer"],
+            review_date=_parse_date(row["review_date"]),
+            run_id=row["run_id"],
+            scraped_at=row["scraped_at"],
+        )
+    except Exception:
+        logger.debug("skipping malformed review row", exc_info=True)
+        return None
+
+
+def _reviews_from_rows(rows) -> List[Review]:
+    reviews = []
+    for row in rows:
+        review = _row_to_review(row)
+        if review is not None:
+            reviews.append(review)
+    return reviews
 
 
 class ReviewStore:
@@ -121,16 +155,21 @@ class ReviewStore:
         payload = review.model_dump(mode="json"); payload["_id"] = rid; rows.append(payload)
         self._json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
 
-    def _load_json(self) -> list:
+    def _load_json(self, run_id: Optional[str] = None) -> list:
         if not self._json_path.exists(): return []
-        try: return json.loads(self._json_path.read_text())
-        except json.JSONDecodeError:
-            logger.warning("reviews.json corrupt — starting fresh"); return []
+        try: rows = json.loads(self._json_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            logger.warning("reviews.json unreadable — starting fresh"); return []
+        if not isinstance(rows, list): return []
+        return [r for r in rows if not run_id or r.get("run_id") == run_id]
 
     @staticmethod
     def _meta(review: Review) -> dict:
+        # Chroma metadata values must be str/int/float/bool: a None or a
+        # date object is rejected by the client and would lose the whole
+        # document instead of one field.
         meta = {"product_name": review.product_name, "region": review.region.value}
-        if review.rating is not None: meta["rating"] = review.rating
+        if review.rating is not None: meta["rating"] = float(review.rating)
         if review.competitor: meta["competitor"] = review.competitor
         if review.source_url: meta["source_url"] = review.source_url
         if review.reviewer: meta["reviewer"] = review.reviewer
@@ -140,12 +179,25 @@ class ReviewStore:
         return meta
 
     @staticmethod
-    def _from_meta(doc: str, m: dict) -> Review:
-        return Review(product_name=(m or {}).get("product_name", "unknown"), region=(m or {}).get("region", "US"),
-                      rating=(m or {}).get("rating"), review_text=doc, source_url=(m or {}).get("source_url", "chroma"),
-                      competitor=(m or {}).get("competitor"), reviewer=(m or {}).get("reviewer"),
-                      review_date=(m or {}).get("review_date"), run_id=(m or {}).get("run_id"),
-                      scraped_at=(m or {}).get("scraped_at"))
+    def _from_meta(doc: str, m: dict) -> Optional[Review]:
+        m = m or {}
+        try:
+            rating = m.get("rating")
+            return Review(
+                product_name=m.get("product_name", "unknown"),
+                region=m.get("region", "US"),
+                rating=float(rating) if rating is not None else None,
+                review_text=doc,
+                source_url=m.get("source_url", "chroma"),
+                competitor=m.get("competitor"),
+                reviewer=m.get("reviewer"),
+                review_date=_parse_date(m.get("review_date")),
+                run_id=m.get("run_id"),
+                scraped_at=m.get("scraped_at"),
+            )
+        except Exception:
+            logger.debug("skipping malformed chroma document", exc_info=True)
+            return None
 
     def _add_chroma(self, review: Review) -> None:
         import chromadb
@@ -159,16 +211,13 @@ class ReviewStore:
                     rows = conn.execute("SELECT * FROM reviews WHERE run_id=%s ORDER BY id", (run_id,)).fetchall()
                 else:
                     rows = conn.execute("SELECT * FROM reviews ORDER BY id").fetchall()
-            return [Review(product_name=r['product_name'], region=r['region'], rating=r['rating'], review_text=r['review_text'],
-                           source_url=r['source_url'], competitor=r['competitor'], reviewer=r['reviewer'],
-                           review_date=r['review_date'], run_id=r['run_id'], scraped_at=r['scraped_at']) for r in rows]
+            return _reviews_from_rows(rows)
         if self._client == "chroma":
             import chromadb
             client = chromadb.PersistentClient(path=str(self._dir)); col = client.get_or_create_collection("reviews")
             where = {"run_id": run_id} if run_id else None; res = col.get(where=where)
-            return [self._from_meta(d,m) for d,m in zip(res["documents"],res["metadatas"])]
-        rows=self._load_json(); rows=[r for r in rows if not run_id or r.get("run_id")==run_id]
-        return [Review.model_validate(r) for r in rows]
+            return [r for r in (self._from_meta(d, m) for d, m in zip(res["documents"], res["metadatas"])) if r]
+        return _reviews_from_rows(self._load_json(run_id=run_id))
 
     def search(self, query: str, n: int = 5, product: Optional[str] = None,
                region: Optional[str] = None, run_id: Optional[str] = None) -> List[Review]:
@@ -187,9 +236,9 @@ class ReviewStore:
                 else:
                     # Deterministic lexical fallback when embeddings are unavailable.
                     rows=conn.execute(f"SELECT * FROM reviews {where} ORDER BY id LIMIT %s", [*params,n]).fetchall()
-            reviews=[Review(product_name=r['product_name'],region=r['region'],rating=r['rating'],review_text=r['review_text'],source_url=r['source_url'],competitor=r['competitor'],reviewer=r['reviewer'],review_date=r['review_date'],run_id=r['run_id'],scraped_at=r['scraped_at']) for r in rows]
+            reviews=_reviews_from_rows(rows)
             if emb is None:
-                kw=set(query.lower().split()); reviews.sort(key=lambda r:-sum(w in r.review_text.lower() for w in kw))
+                kw={w for w in query.lower().split() if len(w)>2}; reviews.sort(key=lambda r:-sum(w in r.review_text.lower() for w in kw))
             return reviews[:n]
         if self._client == "chroma":
             import chromadb

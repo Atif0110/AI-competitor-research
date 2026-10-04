@@ -54,6 +54,42 @@ _QA_SYSTEM = (
 )
 
 
+# Two scrapes of one unchanged price page can land in different snapshot
+# hours. When every remaining movement is a currency/rounding artifact of that
+# re-parse, the honest report is "no movement", not a 4% drop alert.
+_ARTIFACT_CHANGE_PCT = 0.5
+
+
+def _stable_reference_price(offers: List[ProductOffer]) -> Optional[ProductOffer]:
+    """Latest observation per snapshot hour for one price series.
+
+    Without this, the same scraped value can be compared against itself and
+    reported as a price move.
+    """
+    latest_by_hour: Dict[str, ProductOffer] = {}
+    for offer in offers:
+        bucket = offer.scraped_at.strftime("%Y-%m-%dT%H")
+        current = latest_by_hour.get(bucket)
+        if current is None or offer.scraped_at > current.scraped_at:
+            latest_by_hour[bucket] = offer
+    return max(latest_by_hour.values(), key=lambda o: o.scraped_at) if latest_by_hour else None
+
+
+def _significant_move(
+    previous: List[ProductOffer],
+    current: List[ProductOffer],
+) -> Optional[float]:
+    """Percent change between two days, or None when it is only noise."""
+    from_u = min(_price_key(o) for o in previous)
+    to_u = min(_price_key(o) for o in current)
+    if from_u <= 0:
+        return None
+    change = (to_u - from_u) / from_u * 100
+    if abs(change) < _ARTIFACT_CHANGE_PCT:
+        return None
+    return change
+
+
 def _price_key(o: ProductOffer) -> float:
     """Comparison value: normalized USD when available, native otherwise."""
     return o.normalized_price_usd if o.normalized_price_usd is not None else o.price
@@ -65,6 +101,12 @@ def _gid(o: ProductOffer) -> str:
 
 def _gname(o: ProductOffer) -> str:
     return o.canonical_product_name or o.product_name
+
+
+# Analysis must never be silently truncated: this is the ceiling the store is
+# read with when a caller does not ask for a run scope. A single LLM-costing
+# endpoint that silently dropped older rows would produce wrong intelligence.
+_ANALYSIS_LIMIT = 100_000
 
 
 class InsightsEngine:
@@ -81,7 +123,7 @@ class InsightsEngine:
     def _scope(self, run_id: Optional[str]) -> Optional[str]:
         return run_id or self.run_id
 
-    def _offers(self, run_id: Optional[str] = None, limit: int = 20000) -> List[ProductOffer]:
+    def _offers(self, run_id: Optional[str] = None, limit: int = _ANALYSIS_LIMIT) -> List[ProductOffer]:
         return self.store.recent_offers(limit=limit, run_id=self._scope(run_id))
 
     def _reviews(self, run_id: Optional[str] = None) -> List[Review]:
@@ -91,9 +133,10 @@ class InsightsEngine:
                       competitor: Optional[str] = None,
                       run_id: Optional[str] = None) -> List[ProductOffer]:
         gid = resolve(product).canonical_id
+        needle = product.lower()
         offers = []
-        for o in self._offers(run_id, limit=10000):
-            if not (_gid(o) == gid or product.lower() in o.product_name.lower()):
+        for o in self._offers(run_id):
+            if not (_gid(o) == gid or needle in o.product_name.lower()):
                 continue
             if region is not None and o.region != region:
                 continue
@@ -111,7 +154,7 @@ class InsightsEngine:
             groups[(_gid(o), _gname(o), o.region, ent)].append(o)
         return groups
 
-    # ================= price series / stats =================
+    # ---- price series / stats ----
     def price_series(self, product: str, region: Region,
                      competitor: Optional[str] = None,
                      run_id: Optional[str] = None) -> list:
@@ -123,10 +166,15 @@ class InsightsEngine:
     def price_stats(self, product: str, region: Region,
                     competitor: Optional[str] = None,
                     run_id: Optional[str] = None) -> Optional[PriceStats]:
-        offers = self._match_offers(product, region, competitor, run_id)
-        if not offers:
+        raw = self._match_offers(product, region, competitor, run_id)
+        if not raw:
             return None
-        series = sorted(offers, key=lambda o: o.scraped_at)
+        # Collapse repeated scrapes inside the same snapshot hour so one page
+        # cannot be compared against its own previous scrape.
+        seen: Dict[str, ProductOffer] = {}
+        for offer in sorted(raw, key=lambda o: o.scraped_at):
+            seen[offer.scraped_at.strftime("%Y-%m-%dT%H")] = offer
+        series = sorted(seen.values(), key=lambda o: o.scraped_at)
         today = series[-1].scraped_at.date()
         usd_vals = [(_price_key(o)) for o in series]
         native = [o.price for o in series]
@@ -158,7 +206,7 @@ class InsightsEngine:
 
     def regional_snapshot(self, run_id: Optional[str] = None) -> List[dict]:
         rows = []
-        for (gid, name, region, ent), group in self._series_groups(self._offers(run_id, 10000)).items():
+        for (gid, name, region, ent), group in self._series_groups(self._offers(run_id)).items():
             series = sorted(group, key=lambda o: o.scraped_at)
             cur = series[-1]
             p7 = None
@@ -180,7 +228,7 @@ class InsightsEngine:
     # ================= moves / undercuts =================
     def price_moves(self, days_back: int = 30, run_id: Optional[str] = None) -> List[PriceMove]:
         moves: List[PriceMove] = []
-        for (gid, name, region, ent), group in self._series_groups(self._offers(run_id, 30000)).items():
+        for (gid, name, region, ent), group in self._series_groups(self._offers(run_id)).items():
             group.sort(key=lambda o: o.scraped_at)
             dates = sorted({o.scraped_at.date() for o in group})
             if len(dates) < 2:
@@ -189,13 +237,15 @@ class InsightsEngine:
             last = [o for o in group if o.scraped_at.date() == dates[-1]]
             if not prev or not last:
                 continue
+            prev = [_stable_reference_price(prev)]
+            last = [_stable_reference_price(last)]
+            change = _significant_move(prev, last)
+            if change is None:
+                continue
             from_u = min(_price_key(o) for o in prev)
             to_u = min(_price_key(o) for o in last)
-            if not from_u:
-                continue
             from_native = min(o.price for o in prev)
             to_native = min(o.price for o in last)
-            change = (to_u - from_u) / from_u * 100
             if abs(change) >= _MIN_PRICE_CHANGE_PCT:
                 moves.append(PriceMove(
                     product_name=name, region=region,
@@ -210,7 +260,7 @@ class InsightsEngine:
 
     def undercut_analysis(self, region: Optional[Region] = None,
                           run_id: Optional[str] = None) -> List[Undercut]:
-        offers = [o for o in self._offers(run_id, 30000)
+        offers = [o for o in self._offers(run_id)
                   if o.availability.value != "out_of_stock"]
         if region:
             offers = [o for o in offers if o.region == region]
@@ -348,7 +398,7 @@ class InsightsEngine:
                       drop_threshold_pct: Optional[float] = None) -> List[EventAlert]:
         threshold = drop_threshold_pct or settings.price_drop_alert_pct
         events: List[EventAlert] = []
-        offers = self._offers(run_id, 30000)
+        offers = self._offers(run_id)
         groups = self._series_groups(offers)
         all_dates = sorted({o.scraped_at.date() for o in offers})
         latest_date = all_dates[-1] if all_dates else None
@@ -368,11 +418,11 @@ class InsightsEngine:
             last = [o for o in group if o.scraped_at.date() == dates[-1]]
             if not prev or not last:
                 continue
-            from_u = min(_price_key(o) for o in prev)
-            to_u = min(_price_key(o) for o in last)
-            if from_u <= 0:
+            prev = [_stable_reference_price(prev)]
+            last = [_stable_reference_price(last)]
+            change = _significant_move(prev, last)
+            if change is None:
                 continue
-            change = (to_u - from_u) / from_u * 100
             if change <= -threshold:
                 events.append(EventAlert(
                     run_id=run_id, kind="price_drop",
@@ -402,8 +452,13 @@ class InsightsEngine:
             last = [o for o in sub if o.scraped_at.date() == dates[-1]]
             if not prev or not last:
                 continue
-            p_lead = min(prev, key=_price_key)
-            l_lead = min(last, key=_price_key)
+            stable_prev = _stable_reference_price(prev)
+            stable_last = _stable_reference_price(last)
+            if stable_prev is None or stable_last is None:
+                continue
+            # Compare end-of-day leaders so an intra-day re-scrape cannot
+            # fabricate a leadership change.
+            p_lead, l_lead = stable_prev, stable_last
             if (p_lead.competitor or p_lead.seller) != (l_lead.competitor or l_lead.seller):
                 events.append(EventAlert(
                     run_id=run_id, kind="undercut_change", severity="warn",
@@ -426,8 +481,8 @@ class InsightsEngine:
         if len(runs) < 2:
             return []
         latest, previous = runs[0], runs[1]
-        current = self._offers(latest["run_id"], limit=20000)
-        prior = self._offers(previous["run_id"], limit=20000)
+        current = self._offers(latest["run_id"])
+        prior = self._offers(previous["run_id"])
 
         def key(o: ProductOffer):
             return (_gid(o), o.region.value, o.competitor or o.seller or "unknown")

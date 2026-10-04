@@ -11,6 +11,7 @@ from app.storage.vector import ReviewStore
 
 def test_full_pipeline_demo_mode(tmp_path, monkeypatch):
     settings.vector_store_dir = str(tmp_path / "vectors")
+    settings.checkpoint_dir = str(tmp_path / "checkpoints")
     settings.report_output_dir = str(tmp_path / "reports")
     settings.database_url = "sqlite:///" + str(tmp_path / "test.db")
     settings.groq_api_key = settings.openai_api_key = settings.anthropic_api_key = None
@@ -63,6 +64,7 @@ def test_full_pipeline_demo_mode(tmp_path, monkeypatch):
 
 def test_checkpoint_idempotency(tmp_path, monkeypatch):
     settings.vector_store_dir = str(tmp_path / "vectors")
+    settings.checkpoint_dir = str(tmp_path / "checkpoints")
     settings.database_url = "sqlite:///" + str(tmp_path / "test2.db")
     settings.groq_api_key = settings.openai_api_key = settings.anthropic_api_key = None
     settings.llm_provider = "demo"

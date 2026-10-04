@@ -1,6 +1,7 @@
 """Provider-agnostic LLM client with explicit provider selection.
 
 Supported providers:
+    - apinex  (OpenAI-compatible gateway; `free/*` models on a daily allowance)
     - gemini
     - groq
     - openai
@@ -8,7 +9,13 @@ Supported providers:
     - demo
 
 Production deployments should explicitly select a real provider, e.g.
-LLM_PROVIDER=gemini, and set its API key in the environment.
+LLM_PROVIDER=apinex, and set its API key in the environment.
+
+Fallback order is free-allowance first (apinex -> groq -> gemini) then paid
+(anthropic -> openai), so a zero-budget deployment stays on free models and
+only touches metered keys when every free option failed. A provider that
+returns a quota/rate-limit/availability error is put in cooldown instead of
+being retried on every call.
 
 For backwards-compatible local tests, LLM_PROVIDER=auto with no provider
 credentials still uses the deterministic DemoClient. Explicit providers never
@@ -26,13 +33,33 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_PROVIDERS = ("gemini", "groq", "openai", "anthropic")
+_KNOWN_PROVIDERS = ("apinex", "gemini", "groq", "openai", "anthropic")
+
+# Free-allowance providers are always attempted before metered ones so a
+# zero-budget deployment keeps working (apinex free/* -> groq -> gemini),
+# and paid keys are only touched when every free option failed.
+_FREE_FIRST = ("apinex", "groq", "gemini")
+_PAID_LAST = ("anthropic", "openai")
 
 _KEY_PREFIX = {
     "openai": "sk-",
     "anthropic": "sk-ant-",
     "groq": "gsk_",
 }
+
+_MODEL_SETTINGS = {
+    "apinex": "apinex_model",
+    "gemini": "gemini_model",
+    "groq": "groq_model",
+    "openai": "openai_model",
+    "anthropic": "anthropic_model",
+}
+
+
+def model_for(provider: str) -> Optional[str]:
+    """Resolved model name for a provider (never the credential)."""
+    attr = _MODEL_SETTINGS.get(provider)
+    return getattr(settings, attr, None) if attr else None
 
 
 def _warn_if_malformed(name: str, key: Optional[str]) -> None:
@@ -52,80 +79,53 @@ def _warn_if_malformed(name: str, key: Optional[str]) -> None:
 
 
 def _resolve_provider_order() -> List[str]:
-    """Resolve the configured provider chain.
+    """Resolve the configured provider chain (free tier first).
 
     Explicit provider:
-        gemini/groq/openai/anthropic -> that provider first
+        apinex/gemini/groq/openai/anthropic -> that provider first
 
     Demo:
         demo -> demo only
 
-    Auto:
-        Gemini leads when configured.
-        Otherwise preserve the existing Anthropic/OpenAI primary ordering,
-        with Groq as a trailing fallback.
+    Auto / fallback:
+        apinex -> groq -> gemini -> anthropic -> openai, filtered to the
+        providers that actually have a key. Free allowances lead so an
+        unmetered deployment never silently starts spending money.
     """
     forced = settings.llm_provider
 
     if forced == "demo":
         return ["demo"]
 
-    if forced in _KNOWN_PROVIDERS:
-        configured = {
-            "gemini": bool(getattr(settings, "gemini_api_key", None)),
-            "groq": bool(settings.groq_api_key),
-            "openai": bool(settings.openai_api_key),
-            "anthropic": bool(settings.anthropic_api_key),
-        }
+    configured = {
+        "apinex": bool(getattr(settings, "apinex_api_key", None)),
+        "groq": bool(settings.groq_api_key),
+        "gemini": bool(getattr(settings, "gemini_api_key", None)),
+        "anthropic": bool(settings.anthropic_api_key),
+        "openai": bool(settings.openai_api_key),
+    }
 
+    if forced in _KNOWN_PROVIDERS:
         if not configured[forced]:
             raise LLMError(
                 f"{forced.upper()} provider is selected but its API key "
                 "is not configured"
             )
 
-        order = [forced]
-
-        fallback_order = ("anthropic", "openai", "groq", "gemini")
-
-        for name in fallback_order:
-            if name != forced and configured[name]:
-                order.append(name)
-
-        return order
+        return [forced] + [
+            name
+            for name in _FREE_FIRST + _PAID_LAST
+            if name != forced and configured[name]
+        ]
 
     # Auto mode.
-    have_gemini = bool(getattr(settings, "gemini_api_key", None))
-    have_openai = bool(settings.openai_api_key)
-    have_anthropic = bool(settings.anthropic_api_key)
-    have_groq = bool(settings.groq_api_key)
+    order = [
+        name
+        for name in _FREE_FIRST + _PAID_LAST
+        if configured[name]
+    ]
 
-    order: List[str] = []
-
-    if have_gemini:
-        order.append("gemini")
-
-    if have_openai and have_anthropic:
-        preferred = "anthropic"
-
-        if settings.llm_provider in ("openai", "anthropic"):
-            preferred = settings.llm_provider
-
-        order.append(preferred)
-        order.append(
-            "openai" if preferred == "anthropic" else "anthropic"
-        )
-
-    elif have_anthropic:
-        order.append("anthropic")
-
-    elif have_openai:
-        order.append("openai")
-
-    if have_groq:
-        order.append("groq")
-
-    return order
+    return order or ["demo"]
 
 
 class LLMError(Exception):
@@ -337,6 +337,93 @@ class _AnthropicClient:
         )
 
 
+class _ApiNexClient:
+    """APInex provider (OpenAI-compatible gateway, free-tier first).
+
+    Uses plain HTTP so the gateway works without any provider SDK installed
+    and so quota/rate-limit responses can be surfaced with their real status
+    code instead of being swallowed by an SDK retry policy.
+    """
+
+    def complete(self, messages: List[ChatMessage]) -> str:
+        import requests
+
+        base = settings.apinex_base_url.rstrip("/")
+        payload = {
+            "model": settings.apinex_model,
+            "messages": [
+                {"role": m.role, "content": m.content}
+                for m in messages
+            ],
+            "temperature": 0,
+            "max_tokens": settings.apinex_max_output_tokens,
+        }
+
+        try:
+            response = requests.post(
+                f"{base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.apinex_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=settings.apinex_timeout_seconds,
+            )
+        except Exception as exc:
+            raise LLMError(
+                f"apinex request failed: {exc}"
+            ) from exc
+
+        if response.status_code >= 400:
+            # Keep the status code in the message: the extractor uses it to
+            # stop retrying on quota/rate-limit failures.
+            raise LLMError(
+                f"apinex http {response.status_code}: "
+                f"{_error_excerpt(response.text)}"
+            )
+
+        try:
+            data = response.json()
+            return (
+                data["choices"][0]["message"].get("content") or ""
+            )
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise LLMError(
+                "apinex returned an unexpected payload: "
+                f"{_error_excerpt(exc)}"
+            ) from exc
+
+
+def _error_excerpt(text: str, limit: int = 300) -> str:
+    """Collapse a provider error body into one log-safe line."""
+    collapsed = " ".join(str(text or "").split())
+    return collapsed[:limit] or "no detail"
+
+
+_QUOTA_MARKERS = (
+    "429",
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "quota",
+    "resource_exhausted",
+    "insufficient",
+    "daily limit",
+    "overloaded",
+    "503",
+    "service unavailable",
+    "high demand",
+    "402",
+)
+
+
+def _looks_like_quota_error(exc: Exception) -> bool:
+    """True for quota/rate-limit/availability errors worth cooling down."""
+
+    text = str(exc).lower()
+    return any(marker in text for marker in _QUOTA_MARKERS)
+
+
 class DemoClient:
     """Deterministic offline provider for tests and explicit demo mode."""
 
@@ -504,6 +591,7 @@ class LLMClient:
         self.last_error: Optional[str] = None
 
         self._fallback_since: Optional[float] = None
+        self._cooldowns: dict = {}
         self.cooldown_seconds = 60
 
         if settings.llm_provider == "demo" or settings.demo_mode:
@@ -516,6 +604,7 @@ class LLMClient:
         provider_order = _resolve_provider_order()
 
         factories = {
+            "apinex": _ApiNexClient,
             "gemini": _GeminiClient,
             "groq": _GroqClient,
             "openai": _OpenAIClient,
@@ -523,6 +612,7 @@ class LLMClient:
         }
 
         keys = {
+            "apinex": getattr(settings, "apinex_api_key", None),
             "gemini": getattr(settings, "gemini_api_key", None),
             "groq": settings.groq_api_key,
             "openai": settings.openai_api_key,
@@ -602,6 +692,25 @@ class LLMClient:
         ):
             self._current = 0
 
+        # Per-provider cooldown: an exhausted free allowance or a rate-limited
+        # provider is skipped instead of being retried on every single call.
+        now = time.monotonic()
+        cooling = {
+            name
+            for name, until in self._cooldowns.items()
+            if until > now
+        }
+        if cooling and cooling >= {
+            name for name, _ in self._providers
+        }:
+            # Every provider is cooling down: clear the cooldowns rather than
+            # failing the run, and let the configured chain try again.
+            logger.warning(
+                "all providers cooling down (%s); retrying primary",
+                ", ".join(sorted(cooling)),
+            )
+            self._cooldowns.clear()
+
         previous_provider = self._providers[
             self._current
         ][0]
@@ -614,6 +723,16 @@ class LLMClient:
             ) % len(self._providers)
 
             name, client = self._providers[index]
+
+            if (
+                self._cooldowns.get(name, 0.0)
+                > time.monotonic()
+            ):
+                logger.debug(
+                    "skipping provider '%s' — in cooldown",
+                    name,
+                )
+                continue
 
             self.provider_attempts += 1
 
@@ -660,6 +779,11 @@ class LLMClient:
                 last_error = exc
                 self.last_error = str(exc)
 
+                if _looks_like_quota_error(exc):
+                    self._cooldowns[name] = (
+                        time.monotonic() + self.cooldown_seconds
+                    )
+
                 logger.warning(
                     "provider '%s' failed: %s — trying next configured provider",
                     name,
@@ -675,6 +799,25 @@ class LLMClient:
         return self._providers[
             self._current
         ][0]
+
+    @property
+    def chain(self) -> List[str]:
+        """Ordered provider chain currently loaded."""
+
+        return [name for name, _ in self._providers]
+
+    @property
+    def models(self) -> dict:
+        """Resolved model per loaded provider (never any credential)."""
+
+        return {
+            name: model_for(name)
+            for name, _ in self._providers
+        }
+
+    @property
+    def active_model(self) -> Optional[str]:
+        return model_for(self.provider_name)
 
     def telemetry(self) -> dict:
         return {
@@ -695,6 +838,14 @@ class LLMClient:
             "provider_attempts": self.provider_attempts,
             "fallbacks_count": len(self.fallbacks),
             "last_error": self.last_error,
+            "cooldown_providers": sorted(
+                name
+                for name, until in self._cooldowns.items()
+                if until > time.monotonic()
+            ),
+            "chain": self.chain,
+            "active_model": self.active_model,
+            "models": self.models,
         }
 
     def reset_telemetry(self) -> None:

@@ -1,3 +1,7 @@
+# Render blueprint: API (Docker) + static frontend, both on the free plan.
+#
+# The API needs the new deep-research and chat environment variables to be
+# useful; without keys it still runs in evidence-only mode.
 services:
   - type: web
     name: ai-competitor-research-api
@@ -8,9 +12,51 @@ services:
     envVars:
       - key: DATABASE_URL
         value: sqlite:///data/competitor.db
+      - key: VECTOR_STORE_DIR
+        value: data/vectors
+      - key: CHECKPOINT_DIR
+        value: data/checkpoints
+      - key: REPORT_OUTPUT_DIR
+        value: data/reports
       - key: LLM_PROVIDER
         value: auto
       - key: API_KEY_REQUIRED
         value: "true"
+      # Free-first provider chain. Add APINEX_API_KEY for the free tier.
+      - key: APINEX_BASE_URL
+        value: https://apinex.bond/v1
+      - key: APINEX_MODEL
+        value: free/all
+      - key: APINEX_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Deep research engine
+      - key: DEEP_LLM_ENABLED
+        value: "true"
+      - key: DEEP_SEARCH_ENABLED
+        value: "true"
+      - key: DEEP_MAX_PAGES
+        value: "12"
+      - key: DEEP_MAX_DEPTH
+        value: "2"
+      - key: CHAT_TOP_K
+        value: "6"
       - key: CORS_ORIGINS
-        value: https://ai-competitor-research.onrender.com
+        sync: false
+
+  - type: web
+    name: ai-competitor-research-web
+    runtime: static
+    buildCommand: npm --prefix frontend ci && npm --prefix frontend run build
+    staticPublishPath: ./frontend/dist
+    pullRequestPreviewsEnabled: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        sync: false

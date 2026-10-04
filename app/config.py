@@ -278,6 +278,52 @@ class Settings:
         default_factory=lambda: _optional_env("ANTHROPIC_BASE_URL")
     )
 
+    # ------------------------------------------------------------------
+    # APInex (free-tier first aggregator)
+    #
+    # APInex exposes an OpenAI-compatible endpoint plus agent tools
+    # (web search / contents / research). Free models are addressed with a
+    # `free/` prefix and are covered by a daily free-token allowance that
+    # resets at 00:00 UTC, so the default model is a free one.
+    # ------------------------------------------------------------------
+
+    apinex_api_key: str | None = field(
+        default_factory=lambda: _optional_env("APINEX_API_KEY")
+    )
+
+    apinex_base_url: str = field(
+        default_factory=lambda: _str_env(
+            "APINEX_BASE_URL",
+            "https://apinex.bond/v1",
+        )
+    )
+
+    apinex_model: str = field(
+        default_factory=lambda: _str_env(
+            "APINEX_MODEL",
+            "free/all",
+        )
+    )
+
+    apinex_web_tools: bool = field(
+        default_factory=lambda: _bool_env(
+            "APINEX_WEB_TOOLS",
+            True,
+        )
+    )
+
+    apinex_timeout_seconds: int = field(
+        default_factory=lambda: int(
+            os.getenv("APINEX_TIMEOUT_SECONDS", "90")
+        )
+    )
+
+    apinex_max_output_tokens: int = field(
+        default_factory=lambda: int(
+            os.getenv("APINEX_MAX_OUTPUT_TOKENS", "4096")
+        )
+    )
+
     extraction_max_attempts: int = field(
         default_factory=lambda: int(
             os.getenv("EXTRACTION_MAX_ATTEMPTS", "3")
@@ -325,6 +371,13 @@ class Settings:
         )
     )
 
+    checkpoint_dir: str = field(
+        default_factory=lambda: _str_env(
+            "CHECKPOINT_DIR",
+            "data/checkpoints",
+        )
+    )
+
     embedding_model: str = field(
         default_factory=lambda: _str_env(
             "EMBEDDING_MODEL",
@@ -335,6 +388,133 @@ class Settings:
     embedding_dimensions: int = field(
         default_factory=lambda: int(
             os.getenv("EMBEDDING_DIMENSIONS", "1536")
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Deep research
+    # ------------------------------------------------------------------
+
+    deep_max_pages: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_MAX_PAGES", "12")
+        )
+    )
+
+    deep_max_pages_per_host: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_MAX_PAGES_PER_HOST", "8")
+        )
+    )
+
+    deep_max_depth: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_MAX_DEPTH", "2")
+        )
+    )
+
+    deep_concurrency: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_CONCURRENCY", "3")
+        )
+    )
+
+    deep_per_host_delay: float = field(
+        default_factory=lambda: float(
+            os.getenv("DEEP_PER_HOST_DELAY", "1.0")
+        )
+    )
+
+    deep_page_char_budget: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_PAGE_CHAR_BUDGET", "14000")
+        )
+    )
+
+    deep_store_char_budget: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_STORE_CHAR_BUDGET", "40000")
+        )
+    )
+
+    deep_respect_robots: bool = field(
+        default_factory=lambda: _bool_env(
+            "DEEP_RESPECT_ROBOTS",
+            True,
+        )
+    )
+
+    deep_min_content_chars: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_MIN_CONTENT_CHARS", "400")
+        )
+    )
+
+    deep_section_min_chars: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_SECTION_MIN_CHARS", "120")
+        )
+    )
+
+    deep_chunk_chars: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_CHUNK_CHARS", "1100")
+        )
+    )
+
+    deep_chunk_overlap: int = field(
+        default_factory=lambda: int(
+            os.getenv("DEEP_CHUNK_OVERLAP", "150")
+        )
+    )
+
+    deep_llm_enabled: bool = field(
+        default_factory=lambda: _bool_env(
+            "DEEP_LLM_ENABLED",
+            True,
+        )
+    )
+
+    deep_search_enabled: bool = field(
+        default_factory=lambda: _bool_env(
+            "DEEP_SEARCH_ENABLED",
+            True,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Research chat
+    # ------------------------------------------------------------------
+
+    chat_top_k: int = field(
+        default_factory=lambda: int(
+            os.getenv("CHAT_TOP_K", "6")
+        )
+    )
+
+    chat_context_chars: int = field(
+        default_factory=lambda: int(
+            os.getenv("CHAT_CONTEXT_CHARS", "14000")
+        )
+    )
+
+    chat_history_turns: int = field(
+        default_factory=lambda: int(
+            os.getenv("CHAT_HISTORY_TURNS", "6")
+        )
+    )
+
+    chat_min_relevance: float = field(
+        default_factory=lambda: float(
+            os.getenv("CHAT_MIN_RELEVANCE", "0.15")
+        )
+    )
+
+    # Share of a question's vocabulary that must appear in the retrieved
+    # evidence before an extractive (no-model) answer is allowed to answer.
+    chat_min_coverage: float = field(
+        default_factory=lambda: float(
+            os.getenv("CHAT_MIN_COVERAGE", "0.34")
         )
     )
 
@@ -450,12 +630,37 @@ class Settings:
             or self.groq_api_key
             or self.openai_api_key
             or self.anthropic_api_key
+            or self.apinex_api_key
         )
+
+    # Free allowance tiers first, metered/paid providers last. The provider
+    # router walks this order so a deployment with no budget keeps working
+    # on free models and only touches paid keys when free ones fail.
+    FREE_TIER_PROVIDERS = ("apinex", "groq", "gemini")
+    PAID_PROVIDERS = ("anthropic", "openai")
+
+    @property
+    def provider_tiers(self) -> Dict[str, str]:
+        """provider -> 'free' | 'paid' for every provider with a configured key."""
+
+        configured = {
+            "apinex": bool(self.apinex_api_key),
+            "groq": bool(self.groq_api_key),
+            "gemini": bool(self.gemini_api_key),
+            "anthropic": bool(self.anthropic_api_key),
+            "openai": bool(self.openai_api_key),
+        }
+        return {
+            name: ("free" if name in self.FREE_TIER_PROVIDERS else "paid")
+            for name, configured_flag in configured.items()
+            if configured_flag
+        }
 
     def ensure_dirs(self) -> None:
         for directory in (
             self.vector_store_dir,
             self.report_output_dir,
+            self.checkpoint_dir,
         ):
             os.makedirs(directory, exist_ok=True)
 
