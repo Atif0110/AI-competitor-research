@@ -1,0 +1,47 @@
+# Keep the image small, reproducible, and free of local state or secrets.
+# Anything listed here is NOT copied by "COPY . ." in the Dockerfile.
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local environments (Windows venvs are also the wrong platform for the image)
+.venv/
+venv/
+env/
+ENV/
+
+# Version control and agent state
+.git/
+.gitignore
+.github/
+.kilo/
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local data: the container creates these at runtime
+data/
+eval/artifacts/
+.snapshots/
+logs/
+*.log
+
+# Tests and docs are not needed at runtime
+tests/
+scripts/
+eval/
+frontend/
+WELCOME.md
+
+# Frontend is deployed as a separate Render static site
+node_modules/
+dist/
