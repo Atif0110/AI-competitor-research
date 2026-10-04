@@ -17,6 +17,9 @@ const NAV = [
 const REGIONS = ['US', 'UK', 'IN', 'EU', 'JP', 'CA', 'AU', 'SG', 'BR'];
 const STORAGE_KEY = 'acr_api_key';
 
+// Generous, because a free-tier instance that has spun down takes a while to wake.
+const REQUEST_TIMEOUT_MS = 75000;
+
 /* ------------------------------------------------------------------ */
 /* data access                                                         */
 /* ------------------------------------------------------------------ */
@@ -28,28 +31,71 @@ async function api(path, options = {}) {
     ...(options.headers || {}),
   };
 
-  let response;
-  try {
-    response = await fetch(`${API}${path}`, { ...options, headers });
-  } catch {
-    throw new Error(`Cannot reach the research API at ${API}. Check that the service is running and its CORS_ORIGINS includes this origin.`);
+  const method = options.method || 'GET';
+  // A Render free instance can take ~50s to wake from idle. Only idempotent
+  // reads are retried, so a research job can never be started twice.
+  const attempts = method === 'GET' ? 2 : 1;
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(`${API}${path}`, { ...options, headers, signal: controller.signal });
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error?.name === 'AbortError' ? 'timed out' : 'could not connect';
+      if (attempt < attempts) continue;
+      throw new Error(
+        `The research API at ${API} ${lastError}. ` +
+          'If this persists, check that the API service is running (a suspended Render service answers with "Service Suspended"), and that CORS_ORIGINS on the API includes this site origin.',
+      );
+    }
+    clearTimeout(timer);
+
+    const text = await response.text();
+
+    // Render serves an HTML error page for suspended/unavailable services.
+    // The browser hides it behind a CORS failure, so read it explicitly.
+    if (/^\s*<!doctype html|^\s*<html/i.test(text) && !text.trimStart().startsWith('{')) {
+      if (/suspended/i.test(text)) {
+        throw new Error(
+          'The API service is suspended by its owner. Resume it in the Render dashboard, then reload.',
+        );
+      }
+      throw new Error(
+        `The API service returned an HTML error page (${response.status}) instead of data. It is likely restarting or unavailable.`,
+      );
+    }
+
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    if (response.status === 401) {
+      throw new Error(
+        'That workspace key was rejected. Open "Workspace key" in the sidebar and paste the API_KEY configured on the API service.',
+      );
+    }
+    if (response.status === 503) {
+      throw new Error(
+        data?.detail ||
+          'The API service refused the request (503). If it says authentication is not configured, set API_KEY in the service environment.',
+      );
+    }
+    if (!response.ok) {
+      throw new Error(data?.detail || `Request failed (${response.status})`);
+    }
+    return data;
   }
 
-  const text = await response.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-
-  if (response.status === 401) {
-    throw new Error('That workspace key was rejected. Open "Workspace key" in the sidebar and paste the API_KEY configured on the API service.');
-  }
-  if (!response.ok) {
-    throw new Error(data?.detail || `Request failed (${response.status})`);
-  }
-  return data;
+  throw new Error(`The research API at ${API} ${lastError || 'is unreachable'}.`);
 }
 
 const money = (n, currency = 'USD') =>
@@ -282,6 +328,23 @@ function App() {
         </header>
 
         <div className="content">
+          {health?.status === 'error' && (
+            <div className="banner" role="alert">
+              <Icon name="alert" size={16} />
+              <div>
+                <strong>The research API is not responding</strong>
+                <p>
+                  Every page below needs <span className="mono">{API}</span>. If the service is
+                  suspended or still deploying, resume it in the Render dashboard. Nothing on this
+                  page can load until it answers.
+                </p>
+              </div>
+              <button className="btn-ghost" onClick={loadHealth}>
+                Retry
+              </button>
+            </div>
+          )}
+
           {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} health={health} />}
           {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} />}
           {page === 'deep' && (

@@ -1429,6 +1429,38 @@ select {
 }
 
 /* ==================================================================
+   offline / unreachable banner
+   ================================================================== */
+.banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--bad-wash);
+  border: 1px solid var(--bad);
+  border-radius: var(--radius);
+}
+
+.banner svg {
+  color: var(--bad);
+  margin-top: 2px;
+}
+
+.banner strong {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.banner p {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* ==================================================================
    toast
    ================================================================== */
 .toast {
