@@ -666,6 +666,7 @@ class Settings:
             self.vector_store_dir,
             self.report_output_dir,
             self.checkpoint_dir,
+            os.path.dirname(self.database_url.replace("sqlite:///", "")),
         ):
             os.makedirs(directory, exist_ok=True)
 
