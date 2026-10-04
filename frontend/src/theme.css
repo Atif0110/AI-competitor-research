@@ -270,12 +270,27 @@ body::before {
 }
 
 .page-intro h2 {
-  background: var(--grad-spectrum);
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: sheenSlide 11s linear infinite;
+  color: var(--text);
+}
+
+/* Only swap in the gradient where background-clip: text is supported,
+   otherwise the transparent fill would render the heading invisible. */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .page-intro h2 {
+    background: var(--grad-spectrum);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: sheenSlide 11s linear infinite;
+  }
+
+  .markdown h2 {
+    background: linear-gradient(120deg, var(--text), var(--accent) 120%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
 }
 
 .page-intro p {
@@ -293,13 +308,6 @@ body::before {
 }
 
 /* --- markdown + report body ------------------------------------------ */
-.markdown h2 {
-  background: linear-gradient(120deg, var(--text), var(--accent) 120%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
 .cite-chip {
   border-color: rgba(255, 200, 97, .35);
   background: rgba(255, 200, 97, .12);
