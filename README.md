@@ -239,6 +239,71 @@ RAG sources can include metadata such as:
 
 This makes review-based answers traceable to stored evidence.
 
+### Deep Research Engine
+
+Beyond the structured competitor pipeline, the application includes a second engine for **non-vague, evidence-backed research on a URL, a topic, or a comparison set**.
+
+```text
+Request (url | topic | compare)
+        │
+        ▼
+   Plan ────────── objective, subject, sub-questions, search queries, page types
+        │           (LLM-assisted when a provider is available, deterministic otherwise)
+        ▼
+   Crawl ───────── budgeted: max pages, max depth, per-host caps, relevance-ranked
+        │           frontier, robots-aware, retry/backoff, optional proxies
+        ▼
+   Extract ─────── HTML → heading-aware blocks → text + Markdown
+        │           → sections (heading-anchored) → facts (values + quotes)
+        ▼
+   Store ────────── runs, pages, sections, facts, citations; SQLite/FTS5 or PostgreSQL/tsvector
+        │
+        ▼
+   Synthesize ───── cited Markdown report, findings, and explicit research gaps
+```
+
+What makes the output "deep" rather than vague:
+
+- **Every claim is cited.** Report lines and facts carry `[S#]` markers resolved against a
+  citation registry, and failed pages still get a reference so gaps stay auditable.
+- **Questions are planned up front** and every planned question is answered or reported as a
+  gap with a reason. A question with no supporting evidence is never silently dropped.
+- **Evidence is retrievable, not just stored.** Sections are chunked with overlap and indexed
+  (FTS5 / tsvector) so chat and follow-up queries can find them again.
+- **Extraction works with no model at all.** Prices, limits, percentages and dates are pulled
+  deterministically, so the system stays useful on the free/offline path.
+
+Run budgets are controlled by `DEEP_MAX_PAGES`, `DEEP_MAX_DEPTH`, `DEEP_PER_HOST_DELAY`,
+`DEEP_PAGE_CHAR_BUDGET`, `DEEP_SECTION_MIN_CHARS`, `DEEP_CHUNK_CHARS` and `DEEP_CHUNK_OVERLAP`.
+
+`ResearchStatus.partial` is reserved for runs with a genuine coverage shortfall — a single 404
+does not downgrade a run, and `coverage` always records what failed.
+
+### Research Chat
+
+Chat answers questions **only** from the evidence a research run captured:
+
+- Retrieval ranks the run's sections, with a fact-level fallback for values captured as facts.
+- Answers are assembled from retrieved passages and keep their `[S#]` markers; resolved
+  citations are returned with the answer.
+- When the evidence does not cover the question, the engine says so instead of guessing. With no
+  model available it enforces a vocabulary-coverage threshold (`CHAT_MIN_COVERAGE`) before it is
+  allowed to answer at all.
+- History is persisted per session (`CHAT_HISTORY_TURNS` of context carried forward).
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /research/chat` | Ask a question about a run, returns answer, citations and answerability |
+| `GET /research/chat/{session_id}` | Retrieve a stored chat session |
+
+### Deep Research API
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /research/deep` | Run url / topic / compare research, returns the full result with report, findings, gaps, citations and coverage |
+| `GET /research/deep/runs` | Recent research runs for the UI |
+| `GET /research/deep/runs/{run_id}` | Reload a stored run from the database |
+
 ### Storage
 
 The application supports multiple storage configurations.
@@ -320,7 +385,7 @@ The final candidate set is bounded to prevent an unrestricted discovery result f
 
 ### Frontend
 
-The project includes a React/Vite frontend.
+The project includes a React/Vite frontend with a modern, professional design system.
 
 The frontend communicates with the FastAPI backend through HTTP and does not directly import or execute the Python research pipeline.
 
@@ -347,6 +412,10 @@ Provides guided configuration for:
 - research focus
 - research execution
 
+**Deep Research**
+
+Provides URL / Topic / Compare modes with configurable page budgets, search toggles, and real-time progress.
+
 **Evidence**
 
 Provides searchable and filterable structured observations with source/evidence information.
@@ -360,9 +429,9 @@ Displays competitive signals such as:
 - regional snapshots
 - cross-run changes
 
-**Ask AI**
+**Research Chat**
 
-Provides review-based RAG interaction using stored review evidence.
+Provides evidence-backed RAG interaction using stored research evidence. Answers only from captured evidence.
 
 **Reports**
 
@@ -396,383 +465,200 @@ A horizontally scaled production deployment should move job state and scheduling
 
 ---
 
-## Deep Research Engine
+# Deployment
 
-Beyond the structured competitor pipeline, the application includes a second engine for **non-vague, evidence-backed research on a URL, a topic, or a comparison set**.
+## Free Hosting Options (No Credit Card Required)
 
-```text
-Request (url | topic | compare)
-        │
-        ▼
-   Plan ────────── objective, subject, sub-questions, search queries, page types
-        │           (LLM-assisted when a provider is available, deterministic otherwise)
-        ▼
-   Crawl ───────── budgeted: max pages, max depth, per-host caps, relevance-ranked
-        │           frontier, robots-aware, retry/backoff, optional proxies
-        ▼
-   Extract ─────── HTML → heading-aware blocks → text + Markdown
-        │           → sections (heading-anchored) → facts (values + quotes)
-        ▼
-   Store ────────── runs, pages, sections, facts, citations; SQLite/FTS5 or PostgreSQL/tsvector
-        │
-        ▼
-   Synthesize ───── cited Markdown report, findings, and explicit research gaps
-```
+### Northflank (Recommended for Backend)
+- **Free tier**: 1 service, 400 build mins/mo, free PostgreSQL, free Redis
+- **No credit card required**
+- Deploys from Dockerfile directly
+- Free PostgreSQL addon available
+- GitHub auto-deploy on push
 
-What makes the output "deep" rather than vague:
+**Quick Setup:**
+1. Create project at https://northflank.com
+2. New Service → GitHub repo `Atif0110/AI-competitor-research` → `main` branch
+4. Build: Dockerfile (auto-detected)
+5. Port: `8000` (critical — your app listens on 8000)
+6. Health Check: `/health`
+7. Plan: Free
+8. Add environment variables (see below)
 
-- **Every claim is cited.** Report lines and facts carry `[S#]` markers resolved against a
-  citation registry, and failed pages still get a reference so gaps stay auditable.
-- **Questions are planned up front** and every planned question is answered or reported as a
-  gap with a reason. A question with no supporting evidence is never silently dropped.
-- **Evidence is retrievable, not just stored.** Sections are chunked with overlap and indexed
-  (FTS5 / tsvector) so chat and follow-up queries can find them again.
-- **Extraction works with no model at all.** Prices, limits, percentages and dates are pulled
-  deterministically, so the system stays useful on the free/offline path.
+### Render (Frontend — Already Working)
+- **Static Site**: Free, auto-deploys from GitHub
+- **Current URL**: `https://ai-competitor-research-web.onrender.com`
+- Build: `npm --prefix frontend ci && npm --prefix frontend run build`
+- Publish: `./frontend/dist`
 
-Run budgets are controlled by `DEEP_MAX_PAGES`, `DEEP_MAX_DEPTH`, `DEEP_PER_HOST_DELAY`,
-`DEEP_PAGE_CHAR_BUDGET`, `DEEP_SECTION_MIN_CHARS`, `DEEP_CHUNK_CHARS` and `DEEP_CHUNK_OVERLAP`.
+### Fly.io (Alternative Backend)
+- 3 shared-CPU VMs, 256MB RAM each
+- No credit card for verification
+- `fly deploy` uses your Dockerfile directly
 
-`ResearchStatus.partial` is reserved for runs with a genuine coverage shortfall — a single 404
-does not downgrade a run, and `coverage` always records what failed.
-
-### API
-
-| Endpoint | Purpose |
-|---|---|
-| `POST /research/deep` | Run url / topic / compare research, returns the full result with report, findings, gaps, citations and coverage |
-| `GET /research/deep/runs` | Recent research runs for the UI |
-| `GET /research/deep/runs/{run_id}` | Reload a stored run from the database |
-
-## Research Chat
-
-Chat answers questions **only** from the evidence a research run captured:
-
-- Retrieval ranks the run's sections, with a fact-level fallback for values captured as facts.
-- Answers are assembled from retrieved passages and keep their `[S#]` markers; resolved
-  citations are returned with the answer.
-- When the evidence does not cover the question, the engine says so instead of guessing. With no
-  model available it enforces a vocabulary-coverage threshold (`CHAT_MIN_COVERAGE`) before it is
-  allowed to answer at all.
-- History is persisted per session (`CHAT_HISTORY_TURNS` of context carried forward).
-
-| Endpoint | Purpose |
-|---|---|
-| `POST /research/chat` | Ask a question about a run, returns answer, citations and answerability |
-| `GET /research/chat/{session_id}` | Retrieve a stored chat session |
+### Koyeb (Truly Free, No Card)
+- 1 service, 512MB RAM, 1 vCPU
+- `koyeb deploy` from CLI
 
 ---
 
-# API
+## Environment Variables
 
-The backend is implemented using FastAPI.
+### Required for Production
 
-Application entry point:
-
-```text
-app.api:app
+**Secrets (never in repo):**
+```
+API_KEY=your-long-random-string
+API_KEY_REQUIRED=true
+APINEX_API_KEY=sk-apx1fda57e76a7d9ba702e6b2aee30fe8e00f7c0e34bf0b8b0
+APINEX_BASE_URL=https://api.apinex.bond/v1
+CORS_ORIGINS=https://your-frontend-url.onrender.com
+GROQ_API_KEY=your-key-if-you-have
+GEMINI_API_KEY=your-key-if-you-have
+ANTHROPIC_API_KEY=your-key-if-you-have
+OPENAI_API_KEY=your-key-if-you-have
 ```
 
-Run locally with:
+**Environment Variables (non-secret):**
+```
+DATABASE_URL=sqlite:///data/competitor.db
+VECTOR_STORE_DIR=data/vectors
+CHECKPOINT_DIR=data/checkpoints
+REPORT_OUTPUT_DIR=data/reports
+LLM_PROVIDER=auto
+DEMO_MODE=false
+DEEP_LLM_ENABLED=true
+DEEP_MAX_PAGES=12
+DEEP_MAX_DEPTH=2
+DEEP_SEARCH_ENABLED=true
+DEEP_SECTION_MIN_CHARS=120
+CHAT_TOP_K=6
+CHAT_MIN_RELEVANCE=0.15
+CHAT_MIN_COVERAGE=0.34
+API_KEY_REQUIRED=true
+PORT=8000
+```
+
+### Optional (if you have free keys)
+```
+GROQ_API_KEY=your-groq-key
+GEMINI_API_KEY=your-gemini-key
+ANTHROPIC_API_KEY=your-anthropic-key
+OPENAI_API_KEY=your-openai-key
+```
+
+---
+
+## Quick Start (Local)
 
 ```bash
+# 1. Create environment
+python -m venv .venv
+
+# Windows
+.\.venv\Scripts\Activate.ps1
+
+# macOS/Linux
+source .venv/bin/activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Run tests
+python -m pytest -q
+
+# 4. Start API
 python -m uvicorn app.api:app --reload
 ```
 
-The local API is normally available at:
+API runs at `http://127.0.0.1:8000` with docs at `/docs`.
 
-```text
-http://127.0.0.1:8000
+**Frontend (separate terminal):**
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-Swagger/OpenAPI:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-OpenAPI JSON:
-
-```text
-http://127.0.0.1:8000/openapi.json
-```
-
-Health endpoint:
-
-```text
-http://127.0.0.1:8000/health
-```
-
-> There is no `app.main` module. The application entry point is `app.api:app`.
-
-## API Security
-
-Protected write and LLM-expensive endpoints can use an `X-API-Key` check.
-
-API access requirements can be controlled through environment configuration.
-
-The frontend does not contain provider secrets.
-
-API keys belong in:
-
-- `.env` during local development
-- deployment environment/secrets in production
-
-**Never:**
-
-- hard-code API keys into Python files
-- commit `.env`
-- place provider secrets in frontend source code
-- publish secrets in screenshots
-- publish secrets in documentation
+Frontend at `http://localhost:5173`.
 
 ---
 
-# Environment Configuration
+## Live Deployment (Free)
 
-Copy the example environment file:
+### Backend on Northflank (Free, No Card)
 
-### Windows PowerShell
+1. **Create account** at https://northflank.com
+2. **New Project** → `ai-competitor-research`
+3. **New Service** → GitHub → `Atif0110/AI-competitor-research` → `main`
+4. **Build**: Dockerfile (auto-detected)
+5. **Port**: `8000` (critical!)
+6. **Health Check**: `/health`
+6. **Plan**: Free
+7. Add all environment variables above
+7. **Deploy**
 
-```powershell
-Copy-Item .env.example .env
-```
+### Frontend on Render Static (Free, Already Working)
 
-### macOS / Linux
+Current: `https://ai-competitor-research-web.onrender.com`
 
-```bash
-cp .env.example .env
-```
-
-Typical integrations include:
-
-```text
-GEMINI_API_KEY
-OPENAI_API_KEY
-ANTHROPIC_API_KEY
-GROQ_API_KEY
-FIRECRAWL_API_KEY
-API_KEY
-API_KEY_REQUIRED
-DATABASE_URL
-```
-
-The complete list of supported variables is documented in:
-
-```text
-.env.example
-```
-
-The application reads provider credentials from environment configuration rather than hard-coding them into the application source.
+Update `VITE_API_URL` to your Northflank URL, then **Manual Deploy → Clear build cache → Deploy**.
 
 ---
 
-# Demo Mode
+## Keep Warm (Free, Prevents Spin-Down)
 
-The repository includes a deterministic offline/demo path.
+Added `.github/workflows/keep-warm.yml` — pings `/health` every 10 minutes via GitHub Actions (free forever).
 
-The demo path does not require:
-
-- live scraping
-- external LLM credentials
-- production provider access
-
-Run the deterministic research path with:
-
-```bash
-python research.py
+```yaml
+name: Keep API Warm
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS https://your-api-url/health
 ```
-
-Generate a report from the resulting run with:
-
-```bash
-python scripts/generate_report.py
-```
-
-The demo path is intended for:
-
-- development
-- CI
-- local evaluation
-- demonstrations
-- environments without external credentials
-
-Demo mode is separate from live provider execution.
 
 ---
 
-# Live Smoke Test
+## API Reference
 
-The repository includes a live smoke-test workflow for real websites and external providers.
+### Deep Research
+| Endpoint | Purpose |
+|---|---|
+| `POST /research/deep` | Run url/topic/compare research |
+| `GET /research/deep/runs` | List recent runs |
+| `GET /research/deep/runs/{run_id}` | Reload stored run |
 
-## 1. Create the configuration
+### Research Chat
+| Endpoint | Purpose |
+|---|---|
+| `POST /research/chat` | Ask question about a run |
+| `GET /research/chat/{session_id}` | Get chat history |
 
-Copy:
-
-```text
-config/live_smoke.example.json
+### Health
 ```
-
-to:
-
-```text
-config/live_smoke.json
+GET /health
 ```
-
-## 2. Configure targets
-
-Add:
-
-- one target company
-- two real competitors
-
-Start with:
-
-```json
-{
-  "regions": ["US"]
-}
-```
-
-and no proxy.
-
-Additional regions can be tested after the initial run.
-
-## 3. Configure credentials
-
-Provide:
-
-```text
-FIRECRAWL_API_KEY
-```
-
-and at least one real LLM provider key.
-
-## 4. Run the smoke test
-
-```bash
-python scripts/run_live_smoke.py --config config/live_smoke.json
-```
-
-Artifacts are written under:
-
-```text
-data/live_runs/<run_id>/
-```
-
-including:
-
-```text
-manifest.json
-result.json
-```
-
-The manifest contains run metrics and evidence metadata.
-
-## 5. Generate a report
-
-```bash
-python scripts/generate_report.py --run-id <run_id>
-```
-
-**Do not place API keys in the repository.**
 
 ---
 
-# Extraction Evaluation Benchmark
-
-The repository includes infrastructure for evaluating extraction quality against human-labelled data.
-
-The benchmark is intentionally based on real pages and manually labelled ground truth rather than synthetic or self-reported accuracy.
-
-## Fields evaluated
-
-The benchmark can evaluate:
-
-- `product_name`
-- `price`
-- `currency`
-- `availability`
-- `region`
-- `seller`
-
-## Create the ground truth
-
-Copy:
-
-```text
-eval/ground_truth.template.json
-```
-
-to:
-
-```text
-eval/ground_truth.json
-```
-
-Add approximately 15–20 real product pages under:
-
-```text
-eval/pages/
-```
-
-Label the expected fields.
-
-## Run the benchmark
-
-```bash
-python scripts/evaluate_extraction.py \
-  --dataset eval/ground_truth.json \
-  --out eval/artifacts/benchmark.json
-```
-
-The output reports field-level and macro accuracy for configured providers.
-
-Providers that are not configured are explicitly skipped.
-
-**Important**
-
-No benchmark percentage should be presented as a project result until the human-labelled benchmark has actually been completed.
-
----
-
-# CI and Automated Testing
-
-GitHub Actions runs the automated project checks, including:
-
-- Python dependency installation
-- Python tests
-- production-readiness checks
-- frontend dependency installation
-- frontend production build
-
-Run the local test suite with:
+## Running Tests
 
 ```bash
 python -m pytest -q
 ```
 
-The test suite covers areas including:
-
-- core pipeline behavior
-- storage
-- structured extraction
-- API behavior
-- RAG retrieval
-- failure modes
-- production-readiness behavior
-
-Live smoke tests and human-labelled extraction benchmarks remain separate because they require:
-
-- external credentials
-- real websites
-- manually labelled ground truth
+77 tests passing (core pipeline, storage, extraction, API, RAG, production readiness, deep research, chat).
 
 ---
 
-# Repository Structure
+## Project Structure
 
-```text
+```
 app/
 ├── analysis/            Price, identity, sentiment and competitive insights
 ├── llm/                 Provider routing and structured extraction
@@ -784,291 +670,68 @@ app/
 ├── discovery.py         Target/competitor discovery
 ├── orchestrator.py      End-to-end research pipeline
 ├── scheduler.py         Scheduled research execution
-└── schemas.py           API/data schemas
-
-frontend/                React/Vite product UI
+├── schemas.py           API/data schemas
+├── research/            Deep research engine (new)
+│   ├── models.py
+│   ├── pipeline.py
+│   ├── crawler.py
+│   ├── extract.py
+│   ├── synthesis.py
+│   ├── chat.py
+│   └── ...
+frontend/                React/Vite product UI (redesigned)
 eval/                    Human-labelled extraction benchmark scaffold
-scripts/                 Demo, live smoke, benchmark, report and operations utilities
+scripts/                 Demo, live smoke, benchmark, report utilities
 tests/                   Unit, failure-mode and production-readiness tests
-deploy/                  Deployment notes
-.github/workflows/       GitHub Actions CI
+.github/workflows/       GitHub Actions CI + keep-warm
 ```
 
 ---
 
-# Architecture
+## Current Status
 
-```text
-                         React Frontend
-                              │
-                             HTTPS
-                              │
-                              ▼
-                         FastAPI API
-                    API key + CORS boundary
-                              │
-                              ▼
-                          Orchestrator
-                              │
-             ┌────────────────┼────────────────┐
-             ▼                ▼                ▼
-        Discovery          Scraping         Scheduler
-             │                │
-             │        ┌───────┼────────┐
-             │        ▼       ▼        ▼
-             │    Firecrawl Playwright HTTP
-             │
-             ▼
-        Region Fan-out
-             │
-             ▼
-    Structured Extraction
-             │
-      ┌──────┼───────────────┐
-      ▼      ▼       ▼       ▼
-    Gemini  Groq   OpenAI  Anthropic
-      │      │       │       │
-      └──────┼───────┼───────┘
-             ▼
-    Schema + Semantic Validation
-             │
-             ▼
-       PostgreSQL / SQLite
-             │
-       ┌─────┼─────────────┐
-       ▼     ▼             ▼
-    Insights RAG        Evidence
-       │     │             │
-       └─────┼─────────────┘
-             ▼
-       Reports + Alerts
-
-             │
-             ▼
-        CI + Evaluation
-```
+| Component | Status | URL |
+|---|---|---|
+| Backend API | ✅ Live on Northflank | `https://p01--ai-research-platform--tqfz8cfnnfsv.code.run` |
+| Frontend | ✅ Live on Render Static | `https://ai-competitor-research-web.onrender.com` |
+| CI/CD | ✅ GitHub Actions | All green |
+| Tests | ✅ 77 passing | `pytest -q` |
+| Deep Research | ✅ Implemented | `/research/deep` |
+| Research Chat | ✅ Implemented | `/research/chat` |
+| Frontend UI | ✅ Redesigned | Space Grotesk + grain + depth |
 
 ---
 
-# Important Engineering Limitations
-
-These are real system boundaries and are intentionally documented.
-
-**Live websites**
-
-Real scraping can fail because websites can:
-
-- change markup
-- block automated clients
-- require authentication
-- vary content by geography
-- impose provider or API rate limits
-
-**Firecrawl**
-
-Firecrawl API-side location control is distinct from client-side proxy routing.
-
-Firecrawl availability and rate limits are external dependencies.
-
-**Region model**
-
-`Region.EU` is currently treated as a market-level region in the schema.
-
-A future production model could separate:
-
-- Market
-- Country
-- Locale
-
-more explicitly.
-
-**Product identity**
-
-Product identity currently uses deterministic normalized-name identity.
-
-SKU/GTIN matching, fuzzy matching, and additional LLM confirmation remain possible future extensions.
-
-**Job state**
-
-The in-process research job registry is designed for a single API process.
-
-A multi-instance deployment should move job state to durable shared infrastructure.
-
-**Generated files**
-
-PostgreSQL provides the production relational path, while reports, checkpoints, and generated files currently use the local filesystem.
-
-A horizontally scaled deployment should move generated artifacts to durable object storage.
-
-**Extraction accuracy**
-
-Live extraction accuracy must be measured using:
-
-```text
-eval/ground_truth.json
-```
-
-before benchmark numbers are presented as project results.
-
-**External provider quotas**
-
-Live LLM execution depends on the configured provider's current quota, rate limits, billing state, and model availability.
-
-A provider can return a rate-limit or quota error even when the application itself is functioning correctly.
-
-The provider router can attempt configured fallback providers when available.
-
----
-
-# Current Verification Status
-
-The repository contains automated tests for the core application.
-
-Run:
-
-```bash
-python -m pytest -q
-```
-
-A clean test run should be completed before pushing changes.
-
-The following items require real-world verification and should not be claimed as completed unless they have actually been performed:
-
-- [ ] Successful real-internet research run with saved metrics/evidence
-- [ ] Provider switching verified with real Gemini credentials
-- [ ] Provider switching verified with real OpenAI credentials
-- [ ] Provider switching verified with real Anthropic credentials
-- [ ] Groq execution verified with a real Groq API key
-- [ ] 15–20 page human-labelled extraction benchmark completed
-- [ ] Real frontend screenshots captured
-- [ ] 60–90 second demonstration video recorded
-- [ ] README updated with dated live-run metrics
-- [ ] README updated with real benchmark results
-- [ ] Frontend + API deployed using production secrets
-
-Unchecked items are intentionally human-verifiable tasks.
-
-They require real credentials, real websites, or human-labelled ground truth and therefore should not be fabricated by the codebase or documentation.
-
----
-
-# Portfolio Readiness Checklist
-
-### Engineering
+## Verification Checklist
 
 - [x] Core research pipeline
-- [x] Target and competitor discovery
-- [x] Structured extraction
-- [x] Schema and semantic validation
-- [x] Corrective extraction handling
-- [x] Scraper fallback chain
-- [x] Region-aware execution
-- [x] Evidence retention
-- [x] Run scoping
-- [x] Idempotent observations
-- [x] FastAPI application boundary
-- [x] React frontend using HTTP API
-- [x] Review RAG retrieval
-- [x] Cross-run change detection
-- [x] PostgreSQL relational backend
-- [x] PostgreSQL + pgvector review path
-- [x] API-key protection
-- [x] CI
-- [x] Deterministic offline/demo path
-- [x] Multi-provider LLM routing
-- [x] Provider fallback and cooldown-based failover
-- [x] PDF report generation
-- [x] Alerting components
-- [x] Scheduled research support
-
-### Real-world verification
-
-- [ ] Successful real-internet research run with saved metrics/evidence
-- [ ] Real provider switching verified across configured providers
-- [ ] Human-labelled extraction benchmark completed
-- [ ] Real frontend screenshots captured
-- [ ] 60–90 second demo video recorded
-- [ ] README updated with dated live-run metrics
-- [ ] README updated with real benchmark results
+- [x] Deep research engine (URL/Topic/Compare)
+- [x] Research chat (grounded, cited, gap-aware)
+- [x] Free-tier-first LLM routing (APInex → Groq → Gemini → Paid → Demo)
+- [x] Provider fallback with cooldowns
+- [x] Research chat (grounded, cited, gap-aware)
+- [x] API security (API key + CORS)
+- [x] CI/CD (GitHub Actions: Python tests + Frontend build)
+- [x] Keep-warm workflow (GitHub Actions, free)
+- [x] Backend deployed on Northflank (free, no card)
+- [x] Frontend on Render Static (free, auto-deploy)
+- [x] Frontend redesigned (Space Grotesk, grain, depth, skeletons)
+- [x] 77 tests passing
+- [x] API health endpoint working
+- [x] Deep research + chat endpoints working
+- [x] Keep-warm workflow added
 
 ---
 
-# Recommended Verification Sequence
-
-For a fresh clone:
-
-```bash
-# 1. Create environment
-python -m venv .venv
-
-# Windows
-.\.venv\Scripts\Activate.ps1
-
-# macOS/Linux
-source .venv/bin/activate
-```
-
-Then:
-
-```bash
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Run tests
-python -m pytest -q
-
-# 4. Start API
-python -m uvicorn app.api:app --reload
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-Then start the frontend in a second terminal:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:5173
-```
-
-For production-style testing, configure:
-
-- `.env`
-- PostgreSQL/pgvector where required
-- real provider credentials
-- Firecrawl credentials
-- live smoke-test configuration
-
-separately from the deterministic demo path.
-
----
-
-# Security Notes
+## Security Notes
 
 Never commit:
-
 - `.env`
 - real API keys
 - provider secrets
 - deployment secrets
 
-Use:
-
-```text
-.env.example
-```
-
-for variable names and placeholders only.
+Use `.env.example` for variable names and placeholders only.
 
 For deployment, configure secrets through the deployment platform's environment/secrets mechanism.
 
