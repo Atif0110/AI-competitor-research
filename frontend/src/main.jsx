@@ -518,6 +518,76 @@ function Dashboard({ runId, onNavigate, health }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* research pipeline visualization                                     */
+/* ------------------------------------------------------------------ */
+const PIPELINE_STAGES = [
+  { key: 'discovery', label: 'Discovery', desc: 'Finding candidate URLs' },
+  { key: 'scraping', label: 'Scraping', desc: 'Fetching page content' },
+  { key: 'extraction', label: 'Extraction', desc: 'Structured data extraction' },
+  { key: 'validation', label: 'Validation', desc: 'Schema & semantic checks' },
+  { key: 'storage', label: 'Storage', desc: 'Persisting observations' },
+  { key: 'insights', label: 'Insights', desc: 'Generating competitive signals' },
+];
+
+const STAGE_ORDER = PIPELINE_STAGES.map(s => s.key);
+
+function ResearchPipeline({ status, events, target }) {
+  const completedStages = useMemo(() => {
+    const completed = new Set();
+    events?.forEach(e => {
+      const key = e.event?.toLowerCase().replace(/\s+/g, '_');
+      if (STAGE_ORDER.includes(key)) completed.add(key);
+    });
+    return completed;
+  }, [events]);
+
+  const currentStage = events?.[events.length - 1]?.event?.toLowerCase().replace(/\s+/g, '_');
+  const currentIndex = currentStage ? STAGE_ORDER.indexOf(currentStage) : -1;
+
+  return (
+    <section className="pipeline-viz" aria-label="Research pipeline progress">
+      <div className="pipeline-header">
+        <h3>Pipeline Progress</h3>
+        <Badge tone="busy">Live</Badge>
+      </div>
+      <div className="pipeline-track">
+        {PIPELINE_STAGES.map((stage, index) => {
+          const isComplete = completedStages.has(stage.key);
+          const isCurrent = index === currentIndex && !['completed', 'failed'].includes(job?.status);
+          const isPast = index < currentIndex;
+          
+          return (
+            <div key={stage.key} className={`pipeline-stage ${isComplete ? 'complete' : ''} ${isCurrent ? 'current' : ''} ${isPast ? 'past' : ''}`}>
+              <div className="pipeline-node">
+                <span className="pipeline-dot">
+                  {isComplete ? <Icon name="check" size={12} /> : <span className="dot-inner" />}
+                </span>
+              </div>
+              <div className="pipeline-label">
+                <span className="stage-label">{stage.label}</span>
+                <span className="stage-desc">{stage.desc}</span>
+              </div>
+              {index < PIPELINE_STAGES.length - 1 && (
+                <div className={`pipeline-connector ${isComplete ? 'complete' : ''}`} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="pipeline-events">
+        {events?.slice(-3).map((event, i) => (
+          <div key={i} className="event-row">
+            <span className="event-time mono">{new Date(event.timestamp).toLocaleTimeString()}</span>
+            <span className="event-name">{event.event}</span>
+            {event.url && <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">{short(event.url, 50)}</a>}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* competitive run                                                     */
 /* ------------------------------------------------------------------ */
 function CompetitiveRun({ onStart, runId }) {
@@ -606,17 +676,20 @@ function CompetitiveRun({ onStart, runId }) {
             {runId && <span className="mono">{runId}</span>}
           </div>
           {job ? (
-            <div className="run-state">
-              <Badge tone={job.status === 'failed' ? 'bad' : job.status === 'completed' ? 'good' : 'busy'}>
-                {job.status}
-              </Badge>
-              <p className="muted">
-                {job.current_event?.event
-                  ? `${job.current_event.event}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
-                  : 'Waiting for the worker to pick this up.'}
-              </p>
-              {job.error && <p className="error-text">{job.error}</p>}
-            </div>
+            <>
+              <ResearchPipeline status={job.status} events={job.events} target={job.target} job={job} />
+              <div className="run-state">
+                <Badge tone={job.status === 'failed' ? 'bad' : job.status === 'completed' ? 'good' : 'busy'}>
+                  {job.status}
+                </Badge>
+                <p className="muted">
+                  {job.current_event?.event
+                    ? `${job.current_event.event}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
+                    : 'Waiting for the worker to pick this up.'}
+                </p>
+                {job.error && <p className="error-text">{job.error}</p>}
+              </div>
+            </>
           ) : (
             <Empty
               title="No run started"
