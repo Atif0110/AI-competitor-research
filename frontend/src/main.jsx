@@ -594,6 +594,7 @@ function CompetitiveRun({ onStart, runId }) {
   const [company, setCompany] = useState('');
   const [website, setWebsite] = useState('');
   const [products, setProducts] = useState('');
+  const [competitors, setCompetitors] = useState('');
   const [regions, setRegions] = useState(['US']);
   const [job, setJob] = useState(null);
 
@@ -619,7 +620,7 @@ function CompetitiveRun({ onStart, runId }) {
       website,
       regions,
       focus_products: products.split(',').map((p) => p.trim()).filter(Boolean),
-      competitors: [],
+      competitors: competitors.split(',').map((c) => c.trim()).filter(Boolean).map((name) => ({ name })),
     });
   };
 
@@ -646,6 +647,11 @@ function CompetitiveRun({ onStart, runId }) {
               <span>Focus products</span>
               <input value={products} onChange={(e) => setProducts(e.target.value)} placeholder="Pro X Headphones, Air Buds Lite" />
               <small>Comma separated. Leave empty to discover products automatically.</small>
+            </label>
+            <label className="field">
+              <span>Competitors</span>
+              <input value={competitors} onChange={(e) => setCompetitors(e.target.value)} placeholder="Obsidian, Coda, Roam Research" />
+              <small>Comma separated. Name only (we'll find their sites).</small>
             </label>
 
             <fieldset className="field">
