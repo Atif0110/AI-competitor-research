@@ -301,7 +301,7 @@ class Settings:
     apinex_model: str = field(
         default_factory=lambda: _str_env(
             "APINEX_MODEL",
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "free/gpt-5.6-luna",
         )
     )
 
