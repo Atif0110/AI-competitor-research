@@ -90,7 +90,11 @@ async function api(path, options = {}) {
       );
     }
     if (!response.ok) {
-      throw new Error(data?.detail || `Request failed (${response.status})`);
+      const detail = data?.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((d) => d.msg || d.message || JSON.stringify(d)).join('; ')
+        : detail || `Request failed (${response.status})`;
+      throw new Error(message);
     }
     return data;
   }
