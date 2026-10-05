@@ -301,7 +301,7 @@ class Settings:
     apinex_model: str = field(
         default_factory=lambda: _str_env(
             "APINEX_MODEL",
-            "free/all",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
         )
     )
 
@@ -397,7 +397,7 @@ class Settings:
 
     deep_max_pages: int = field(
         default_factory=lambda: int(
-            os.getenv("DEEP_MAX_PAGES", "12")
+            os.getenv("DEEP_MAX_PAGES", "4")
         )
     )
 
@@ -478,7 +478,7 @@ class Settings:
     deep_search_enabled: bool = field(
         default_factory=lambda: _bool_env(
             "DEEP_SEARCH_ENABLED",
-            True,
+            False,
         )
     )
 
