@@ -139,6 +139,7 @@ const ICONS = {
   check: <path d="m5 12 4.5 4.5L19 7"/>,
   alert: <><path d="M12 8v5"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/></>,
   menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
+  refresh: <><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></>,
   key: <><circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M17 12v3"/></>,
   search: <><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></>,
 };
@@ -524,69 +525,73 @@ function Dashboard({ runId, onNavigate, health }) {
 /* ------------------------------------------------------------------ */
 /* research pipeline visualization                                     */
 /* ------------------------------------------------------------------ */
+
+// Stage keys must match the event names the orchestrator actually emits,
+// otherwise no stage can ever light up.
 const PIPELINE_STAGES = [
-  { key: 'discovery', label: 'Discovery', desc: 'Finding candidate URLs' },
-  { key: 'scraping', label: 'Scraping', desc: 'Fetching page content' },
-  { key: 'extraction', label: 'Extraction', desc: 'Structured data extraction' },
-  { key: 'validation', label: 'Validation', desc: 'Schema & semantic checks' },
-  { key: 'storage', label: 'Storage', desc: 'Persisting observations' },
-  { key: 'insights', label: 'Insights', desc: 'Generating competitive signals' },
+  { key: 'discovery_complete', label: 'Discovery', desc: 'Finding candidate URLs' },
+  { key: 'region_fanout_ready', label: 'Fan-out', desc: 'Applying region context' },
+  { key: 'scrape_started', label: 'Scraping', desc: 'Fetching page content' },
+  { key: 'scrape_succeeded', label: 'Extraction', desc: 'Structured extraction' },
+  { key: 'extraction_succeeded', label: 'Validation', desc: 'Schema and semantic checks' },
+  { key: 'run_completed', label: 'Insights', desc: 'Saving observations' },
 ];
 
-const STAGE_ORDER = PIPELINE_STAGES.map(s => s.key);
+const STAGE_ORDER = PIPELINE_STAGES.map((stage) => stage.key);
 
-function ResearchPipeline({ status, events, target }) {
-  const completedStages = useMemo(() => {
-    const completed = new Set();
-    events?.forEach(e => {
-      const key = e.event?.toLowerCase().replace(/\s+/g, '_');
-      if (STAGE_ORDER.includes(key)) completed.add(key);
-    });
-    return completed;
+function ResearchPipeline({ status, events }) {
+  const seen = new Set((events || []).map((event) => event.event));
+  const reached = STAGE_ORDER.findIndex((key) => seen.has(key));
+  const finished = status === 'completed' || status === 'failed';
+
+  const counts = useMemo(() => {
+    const scraped = (events || []).filter((e) => e.event === 'scrape_succeeded').length;
+    const extracted = (events || []).filter((e) => e.event === 'extraction_succeeded').length;
+    const failed = (events || []).filter((e) => e.event === 'extraction_failed').length;
+    return { scraped, extracted, failed };
   }, [events]);
-
-  const currentStage = events?.[events.length - 1]?.event?.toLowerCase().replace(/\s+/g, '_');
-  const currentIndex = currentStage ? STAGE_ORDER.indexOf(currentStage) : -1;
 
   return (
     <section className="pipeline-viz" aria-label="Research pipeline progress">
       <div className="pipeline-header">
-        <h3>Pipeline Progress</h3>
-        <Badge tone="busy">Live</Badge>
+        <h3>Pipeline progress</h3>
+        <span className="pipeline-counts">
+          {counts.scraped} scraped · {counts.extracted} extracted
+          {counts.failed ? ` · ${counts.failed} rejected` : ''}
+        </span>
       </div>
-      <div className="pipeline-track">
+
+      <ol className="pipeline-track">
         {PIPELINE_STAGES.map((stage, index) => {
-          const isComplete = completedStages.has(stage.key);
-          const isCurrent = index === currentIndex && !['completed', 'failed'].includes(job?.status);
-          const isPast = index < currentIndex;
-          
+          const done = seen.has(stage.key);
+          const current = !finished && index === reached;
+          const past = reached > index;
+          const state = done || past ? 'complete' : current ? 'current' : 'pending';
           return (
-            <div key={stage.key} className={`pipeline-stage ${isComplete ? 'complete' : ''} ${isCurrent ? 'current' : ''} ${isPast ? 'past' : ''}`}>
-              <div className="pipeline-node">
-                <span className="pipeline-dot">
-                  {isComplete ? <Icon name="check" size={12} /> : <span className="dot-inner" />}
-                </span>
-              </div>
-              <div className="pipeline-label">
-                <span className="stage-label">{stage.label}</span>
-                <span className="stage-desc">{stage.desc}</span>
-              </div>
-              {index < PIPELINE_STAGES.length - 1 && (
-                <div className={`pipeline-connector ${isComplete ? 'complete' : ''}`} />
-              )}
-            </div>
+            <li key={stage.key} className={`pipeline-stage is-${state}`}>
+              <span className="pipeline-dot">
+                {state === 'complete' ? <Icon name="check" size={12} /> : <span className="dot-inner" />}
+              </span>
+              <span className="stage-label">{stage.label}</span>
+              <span className="stage-desc">{stage.desc}</span>
+            </li>
           );
         })}
-      </div>
-      <div className="pipeline-events">
-        {events?.slice(-3).map((event, i) => (
-          <div key={i} className="event-row">
+      </ol>
+
+      <ol className="pipeline-events">
+        {(events || []).slice(-4).reverse().map((event, index) => (
+          <li className={`event-row${event.event === 'extraction_failed' ? ' event-bad' : ''}`} key={`${event.timestamp}-${index}`}>
             <span className="event-time mono">{new Date(event.timestamp).toLocaleTimeString()}</span>
-            <span className="event-name">{event.event}</span>
-            {event.url && <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">{short(event.url, 50)}</a>}
-          </div>
+            <span className="event-name">{pretty(event.event)}</span>
+            {event.url && (
+              <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">
+                {short(event.url, 44)}
+              </a>
+            )}
+          </li>
         ))}
-      </div>
+      </ol>
     </section>
   );
 }
@@ -602,14 +607,55 @@ function CompetitiveRun({ onStart, runId }) {
   const [competitorUrls, setCompetitorUrls] = useState('');
   const [regions, setRegions] = useState(['US']);
   const [job, setJob] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [loadError, setLoadError] = useState('');
 
+  // The run id lives in the parent. Without this, `job` stayed null forever,
+  // the status panel showed "No run started" and the pipeline never rendered,
+  // even though the backend had already accepted and was running the job.
+  useEffect(() => {
+    if (!runId) {
+      setJob(null);
+      return undefined;
+    }
+    let cancelled = false;
+    api(`/research/jobs/${runId}`)
+      .then((data) => {
+        if (!cancelled) {
+          setJob(data);
+          setLoadError('');
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setLoadError(error.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
+
+  // Poll only while the job is actually in flight.
   useEffect(() => {
     if (!job || ['completed', 'failed'].includes(job.status)) return undefined;
     const timer = setInterval(() => {
       api(`/research/jobs/${job.job_id}`)
-        .then(setJob)
-        .catch(() => {});
-    }, 1500);
+        .then((data) => {
+          setJob(data);
+          setLoadError('');
+        })
+        .catch((error) => setLoadError(error.message));
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [job]);
+
+  // A visible clock, so a slow run never looks like a dead one.
+  useEffect(() => {
+    if (!job || ['completed', 'failed'].includes(job.status)) return undefined;
+    const startedAt = job.started_at ? Date.parse(job.started_at) : Date.now();
+    setElapsed(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
+    const timer = setInterval(() => {
+      setElapsed(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
+    }, 1000);
     return () => clearInterval(timer);
   }, [job]);
 
@@ -695,23 +741,64 @@ function CompetitiveRun({ onStart, runId }) {
         <section className="panel">
           <div className="panel-head">
             <h2>Run status</h2>
-            {runId && <span className="mono">{runId}</span>}
+            <div className="panel-head-right">
+              {runId && <span className="mono">{runId}</span>}
+              {job && ['completed', 'failed'].includes(job.status) && (
+                <button
+                  className="btn-ghost"
+                  onClick={() => api(`/research/jobs/${runId}`).then(setJob).catch((e) => setLoadError(e.message))}
+                >
+                  <Icon name="refresh" size={14} />
+                  Refresh
+                </button>
+              )}
+            </div>
           </div>
+
+          {loadError && <p className="error-text">{loadError}</p>}
+
           {job ? (
             <>
-              <ResearchPipeline status={job.status} events={job.events} target={job.target} job={job} />
+              <ResearchPipeline status={job.status} events={job.events} />
               <div className="run-state">
                 <Badge tone={job.status === 'failed' ? 'bad' : job.status === 'completed' ? 'good' : 'busy'}>
                   {job.status}
                 </Badge>
+                {!['completed', 'failed'].includes(job.status) && (
+                  <span className="mono run-clock">{elapsed}s elapsed</span>
+                )}
                 <p className="muted">
                   {job.current_event?.event
-                    ? `${job.current_event.event}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
+                    ? `${pretty(job.current_event.event)}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
                     : 'Waiting for the worker to pick this up.'}
                 </p>
                 {job.error && <p className="error-text">{job.error}</p>}
+                {job.status === 'failed' && !job.error && (
+                  <p className="muted">
+                    The run failed without a reported reason. Check the API service logs for the
+                    provider error — free tiers usually answer 429 here.
+                  </p>
+                )}
+                {job.result && (
+                  <dl className="facts">
+                    {job.result.offers != null && (
+                      <div><dt>Offers captured</dt><dd className="mono">{num(job.result.offers)}</dd></div>
+                    )}
+                    {job.result.runs != null && (
+                      <div><dt>Runs recorded</dt><dd className="mono">{num(job.result.runs)}</dd></div>
+                    )}
+                    {job.result.reviews != null && (
+                      <div><dt>Reviews stored</dt><dd className="mono">{num(job.result.reviews)}</dd></div>
+                    )}
+                  </dl>
+                )}
               </div>
             </>
+          ) : runId ? (
+            <Empty
+              title="Loading run status"
+              text={`Fetching ${runId} from the API…`}
+            />
           ) : (
             <Empty
               title="No run started"
