@@ -1,0 +1,16 @@
+name: Keep API Warm
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # Every 10 minutes
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  ping:
+    name: Ping API Health Endpoint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Health Endpoint
+        run: |
+          curl -fsS https://p01--ai-research-platform--tqfz8cfnnfsv.code.run/health
+          echo "API health check successful at $(date)"
