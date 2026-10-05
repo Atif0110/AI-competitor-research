@@ -595,6 +595,7 @@ function CompetitiveRun({ onStart, runId }) {
   const [website, setWebsite] = useState('');
   const [products, setProducts] = useState('');
   const [competitors, setCompetitors] = useState('');
+  const [competitorUrls, setCompetitorUrls] = useState('');
   const [regions, setRegions] = useState(['US']);
   const [job, setJob] = useState(null);
 
@@ -615,12 +616,18 @@ function CompetitiveRun({ onStart, runId }) {
 
   const submit = (event) => {
     event.preventDefault();
+    const competitorNames = competitors.split(',').map((c) => c.trim()).filter(Boolean);
+    const competitorUrlsList = competitorUrls.split(',').map((u) => u.trim()).filter(Boolean);
+    const competitorsData = competitorNames.map((name, i) => ({
+      name,
+      website: competitorUrlsList[i] || `https://${name.toLowerCase().replace(/\s+/g, '')}.com`,
+    }));
     onStart({
       company,
       website,
       regions,
       focus_products: products.split(',').map((p) => p.trim()).filter(Boolean),
-      competitors: competitors.split(',').map((c) => c.trim()).filter(Boolean).map((name) => ({ name })),
+      competitors: competitorsData,
     });
   };
 
@@ -651,7 +658,12 @@ function CompetitiveRun({ onStart, runId }) {
             <label className="field">
               <span>Competitors</span>
               <input value={competitors} onChange={(e) => setCompetitors(e.target.value)} placeholder="Obsidian, Coda, Roam Research" />
-              <small>Comma separated. Name only (we'll find their sites).</small>
+              <small>Comma separated names.</small>
+            </label>
+            <label className="field">
+              <span>Competitor websites</span>
+              <input value={competitorUrls} onChange={(e) => setCompetitorUrls(e.target.value)} placeholder="https://obsidian.md, https://coda.io, https://roamresearch.com" />
+              <small>Comma separated URLs (matching order of names above). Optional — we'll guess if omitted.</small>
             </label>
 
             <fieldset className="field">
