@@ -31,6 +31,7 @@ from app.research.fetching import (
     parse_page,
 )
 from app.research.models import PageDocument, PageType, ResearchPlan
+from app.research.url_discovery import discover_urls_for_host
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,20 @@ class Crawler:
                 scheme = urlparse(url).scheme
                 for segment in ("pricing", "products", "product", "about", "docs"):
                     enqueue(f"{scheme}://{host}/{segment}", 1, priority_bonus=2.0)
+
+                # Additional fallback: try to discover more URLs for this host
+                # when no links were found at all (e.g., JS-heavy sites)
+                try:
+                    from app.research.url_discovery import discover_urls_for_host
+                    discovered = discover_urls_for_host(url, max_urls=20)
+                    for discovered_url in discovered:
+                        enqueue(discovered_url, 1, priority_bonus=1.0)
+                except Exception:
+                    # Fallback to hardcoded paths if discovery fails
+                    host = host_of(url)
+                    scheme = urlparse(url).scheme
+                    for segment in ("pricing", "products", "product", "about", "docs"):
+                        enqueue(f"{scheme}://{host}/{segment}", 1, priority_bonus=2.0)
 
             queue.sort(key=lambda item: (item[0], item[1]))
 
