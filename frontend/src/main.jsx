@@ -1651,7 +1651,7 @@ function ResearchChat({ runId, notify }) {
             <dl className="facts">
               <div><dt>Research path</dt><dd className="mono">{current.kind === 'deep' ? 'Deep research' : 'Competitive run'}</dd></div>
               <div><dt>Sources fetched</dt><dd className="mono">{num(current.kind === 'deep' ? current.coverage?.pages_fetched : current.metrics?.urls_succeeded)}</dd></div>
-              <div><dt>Offers / facts</dt><dd className="mono">{num(current.kind === 'deep' ? current.coverage?.facts : current.metrics?.products)}</dd></div>
+              <div><dt>{current.kind === 'deep' ? 'Facts extracted' : 'Offers captured'}</dt><dd className="mono">{num(current.kind === 'deep' ? current.coverage?.facts : current.offers_captured)}</dd></div>
             </dl>
           ) : (
             <p className="muted">

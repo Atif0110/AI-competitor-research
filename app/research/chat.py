@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections import defaultdict
 from typing import List, Optional, Sequence, Tuple
 
 from app.config import settings
@@ -73,6 +74,10 @@ class ResearchChat:
                 answerable=False,
             )
 
+        if _is_offer_comparison_question(question):
+            offer_answer = self._answer_from_captured_offers(question, run_id, session_id)
+            return offer_answer
+
         sections, citations = self._retrieve(run_id, question, top_k)
         if not sections:
             return self._not_covered(session_id, run_id, question)
@@ -95,6 +100,97 @@ class ResearchChat:
             sources_used=len(sections),
             answerable=True,
             provider=getattr(self.llm, "provider", "") or "demo",
+        )
+        self._persist(session_id, "user", question)
+        self._persist(session_id, "assistant", message, resolved)
+        return answer
+
+    def _answer_from_captured_offers(
+        self, question: str, run_id: str, session_id: str
+    ) -> ChatAnswer:
+        """Answer price questions from captured offer records, never page prose."""
+        sections = [
+            section for section in self.documents.sections_for_run(run_id)
+            if section.heading == "Captured structured offer"
+        ]
+        citations = self.documents.citations_for_run(run_id)
+        citation_refs = {citation.ref for citation in citations}
+        rows = []
+        for section in sections:
+            match = re.search(
+                r"is listed at\s+([A-Z]{3})\s+([\d,]+(?:\.\d+)?)\s+in\s+([A-Z]{2})",
+                section.content,
+                re.IGNORECASE,
+            )
+            if not match or section.source_ref not in citation_refs:
+                continue
+            competitor = re.search(r"Competitor:\s*([^.;]+)", section.content, re.IGNORECASE)
+            availability = re.search(r"availability:\s*([^.;]+)", section.content, re.IGNORECASE)
+            rows.append({
+                "competitor": competitor.group(1).strip() if competitor else "Unknown competitor",
+                "product": section.title.strip(),
+                "currency": match.group(1).upper(),
+                "price": float(match.group(2).replace(",", "")),
+                "region": match.group(3).upper(),
+                "availability": availability.group(1).strip() if availability else "not captured",
+                "ref": section.source_ref,
+            })
+
+        if not rows:
+            message = (
+                "This run has no validated structured offers to compare. "
+                "I can’t reliably infer competitor prices from general page text; "
+                "check the run’s captured evidence or rerun with relevant pricing pages."
+            )
+            answer = ChatAnswer(
+                session_id=session_id, run_id=run_id, message=message,
+                citations=[], sources_used=0, answerable=False,
+                provider="captured offers",
+            )
+            self._persist(session_id, "user", question)
+            self._persist(session_id, "assistant", message, [])
+            return answer
+
+        lines = []
+        for row in rows:
+            lines.append(
+                f"- {row['competitor']} — {row['product']}: "
+                f"{row['currency']} {row['price']:,.2f} ({row['region']}); "
+                f"availability {row['availability']} [{row['ref']}]."
+            )
+
+        comparison = ""
+        comparison_requested = bool(re.search(r"\b(cheaper|cheapest|lowest|compare|comparison)\b", question, re.I))
+        if comparison_requested:
+            groups = defaultdict(list)
+            for row in rows:
+                product_key = re.sub(r"[^a-z0-9]+", " ", row["product"].lower()).strip()
+                groups[(product_key, row["currency"], row["region"])].append(row)
+            comparable = [group for group in groups.values() if len({row["competitor"].casefold() for row in group}) > 1]
+            if comparable:
+                group = max(comparable, key=len)
+                lowest = min(group, key=lambda row: row["price"])
+                comparison = (
+                    f"Among offers with the same product name, currency, and region, "
+                    f"{lowest['competitor']} has the lowest captured price at "
+                    f"{lowest['currency']} {lowest['price']:,.2f} ({lowest['region']}) [{lowest['ref']}]."
+                )
+            else:
+                comparison = (
+                    "I can’t determine which is cheaper from this run: the captured offers "
+                    "do not share the same product name, currency, and region, so they may "
+                    "not be like-for-like."
+                )
+
+        message = "Captured offers for this run:\n" + "\n".join(lines)
+        if comparison:
+            message += "\n\n" + comparison
+        refs = cited_refs(message)
+        resolved = resolve_citations(list(dict.fromkeys(refs)), citations)
+        answer = ChatAnswer(
+            session_id=session_id, run_id=run_id, message=message,
+            citations=resolved, sources_used=len(resolved), answerable=True,
+            provider="captured offers",
         )
         self._persist(session_id, "user", question)
         self._persist(session_id, "assistant", message, resolved)
@@ -276,6 +372,14 @@ class ResearchChat:
 def _first_sentences(text: str, count: int) -> str:
     parts = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text or "").strip())
     return " ".join(parts[:count]).strip()[:400]
+
+
+def _is_offer_comparison_question(question: str) -> bool:
+    return bool(re.search(
+        r"\b(price|prices|cost|costs|pricing|offer|offers|cheaper|cheapest|lowest|compare|comparison|charge|charges)\b|[$₹£€¥]",
+        question,
+        re.IGNORECASE,
+    ))
 
 
 def _covers(question: str, context: str, threshold: Optional[float] = None) -> bool:

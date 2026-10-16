@@ -556,6 +556,7 @@ def create_app():
                     "created_at": job.get("started_at") or job.get("created_at"),
                     "duration_s": result.get("duration_s") or metrics.get("runtime_s"),
                     "metrics": metrics, "error": job.get("error"),
+                    "offers_captured": result.get("offers_captured", _store.count(run_id=job.get("job_id"))),
                 }
                 unique[("competitive", job.get("job_id"))] = job_run
         for metrics in _store.recent_runs(limit=limit):
@@ -563,7 +564,7 @@ def create_app():
                 "run_id": metrics["run_id"], "kind": "competitive", "status": "completed",
                 "title": metrics.get("target_company") or "Competitive research",
                 "created_at": metrics.get("started_at"), "duration_s": metrics.get("runtime_s"),
-                "metrics": metrics,
+                "metrics": metrics, "offers_captured": _store.count(run_id=metrics["run_id"]),
             }
             key = (run["kind"], run["run_id"])
             if key in unique:
