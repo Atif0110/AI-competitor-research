@@ -4,15 +4,15 @@ import './styles.css';
 
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
-const NAV = [
-  ['dashboard', 'Overview', 'grid'],
-  ['run', 'Competitive run', 'target'],
-  ['deep', 'Deep research', 'compass'],
-  ['evidence', 'Evidence', 'layers'],
-  ['signals', 'Signals', 'pulse'],
-  ['chat', 'Research chat', 'chat'],
-  ['reports', 'Reports', 'doc'],
+const NAV_GROUPS = [
+  { label: 'Workspace', items: [['dashboard', 'Overview', 'grid']] },
+  { label: 'Research', items: [['run', 'Competitive run', 'target'], ['deep', 'Deep research', 'compass']] },
+  {
+    label: 'Intelligence',
+    items: [['signals', 'Signals', 'pulse'], ['evidence', 'Evidence', 'layers'], ['chat', 'Research chat', 'chat'], ['reports', 'Reports', 'doc']],
+  },
 ];
+const NAV = NAV_GROUPS.flatMap((group) => group.items);
 
 const REGIONS = ['US', 'UK', 'IN', 'EU', 'JP', 'CA', 'AU', 'SG', 'BR'];
 const STORAGE_KEY = 'acr_api_key';
@@ -258,7 +258,7 @@ function App() {
   const openKeyPrompt = () => {
     const entered = window.prompt(
       'Enter the API_KEY configured on the API service. It is stored for this browser tab only.',
-      localStorage.getItem(STORAGE_KEY) || '',
+      sessionStorage.getItem(STORAGE_KEY) || '',
     );
     if (entered === null) return;
     if (entered.trim()) sessionStorage.setItem(STORAGE_KEY, entered.trim());
@@ -289,19 +289,26 @@ function App() {
         </div>
 
         <ul className="rail-list">
-          {NAV.map(([id, label, icon]) => (
-            <li key={id}>
-              <button
-                className={page === id ? 'is-active' : ''}
-                onClick={() => {
-                  setPage(id);
-                  setNavOpen(false);
-                }}
-                aria-current={page === id ? 'page' : undefined}
-              >
-                <Icon name={icon} size={17} />
-                <span>{label}</span>
-              </button>
+          {NAV_GROUPS.map((group) => (
+            <li className="rail-group" key={group.label}>
+              <span className="rail-group-label">{group.label}</span>
+              <ul className="rail-group-list">
+                {group.items.map(([id, label, icon]) => (
+                  <li key={id}>
+                    <button
+                      className={page === id ? 'is-active' : ''}
+                      onClick={() => {
+                        setPage(id);
+                        setNavOpen(false);
+                      }}
+                      aria-current={page === id ? 'page' : undefined}
+                    >
+                      <Icon name={icon} size={17} />
+                      <span>{label}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
@@ -403,83 +410,109 @@ function Dashboard({ runId, onNavigate, health }) {
   const [metrics, setMetrics] = useState(null);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [metricsError, setMetricsError] = useState(false);
+  const [eventsError, setEventsError] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
-    Promise.all([
-      api('/metrics/aggregate').catch(() => null),
-      api(`/insights/events${runId ? `?run_id=${runId}` : ''}`).catch(() => []),
-    ])
-      .then(([aggregate, activity]) => {
-        setMetrics(aggregate);
-        setEvents(Array.isArray(activity) ? activity.slice(0, 6) : []);
-      })
-      .finally(() => setLoading(false));
-  }, [runId]);
+    let current = true;
+    setLoading(true);
+    setMetricsError(false);
+    setEventsError(false);
+    Promise.allSettled([
+      api('/metrics/aggregate'),
+      api(`/insights/events${runId ? `?run_id=${runId}` : ''}`),
+    ]).then(([aggregateResult, activityResult]) => {
+      if (!current) return;
+      if (aggregateResult.status === 'fulfilled' && aggregateResult.value) {
+        setMetrics(aggregateResult.value);
+      } else {
+        setMetrics(null);
+        setMetricsError(true);
+      }
+      if (activityResult.status === 'fulfilled' && Array.isArray(activityResult.value)) {
+        setEvents(activityResult.value.slice(0, 6));
+      } else {
+        setEvents([]);
+        setEventsError(true);
+      }
+    }).finally(() => {
+      if (current) setLoading(false);
+    });
+    return () => { current = false; };
+  }, [runId, refreshKey]);
 
-  const offers = metrics?.offers ?? 0;
-  const reviews = metrics?.reviews ?? 0;
-  const regions = metrics?.regions ?? 0;
+  const offers = health?.offers;
+  const products = metrics?.total_products;
+  const regions = metrics?.total_regions;
+  const latestRun = metrics?.latest_run;
 
   return (
     <>
-      <header className="research-hero">
-        <div className="research-hero-copy">
-          <div className="hero-kicker"><span className="hero-kicker-dot" /> COMPETITIVE INTELLIGENCE, IN CONTEXT</div>
-          <h1>See the market<br />from <span>every angle.</span></h1>
-          <p>Turn competitor websites, offers, reviews and regional shifts into evidence you can act on.</p>
-          <div className="hero-actions">
-            <button className="hero-primary" onClick={() => onNavigate('deep')}>
-              <Icon name="compass" size={16} /> Explore a competitor <Icon name="arrow" size={15} />
+      <header className="desk-hero">
+        <div className="desk-copy">
+          <div className="desk-kicker"><span className="hero-kicker-dot" /> COMPETITIVE INTELLIGENCE <span className="desk-kicker-divider">/</span> RESEARCH DESK</div>
+          <h1>Market signals,<br /><span>with receipts.</span></h1>
+          <p>Research competitors, compare what they offer, and trace every finding back to its source.</p>
+          <div className="desk-actions">
+            <button className="btn-primary" onClick={() => onNavigate('run')}>
+              <Icon name="target" size={16} /> Compare competitors <Icon name="arrow" size={15} />
             </button>
-            <button className="hero-secondary" onClick={() => onNavigate('run')}>
-              Build a comparison <Icon name="arrow" size={14} />
+            <button className="desk-secondary" onClick={() => onNavigate('deep')}>
+              Explore a question <Icon name="arrow" size={14} />
             </button>
-          </div>
-          <div className="hero-proof">
-            <span className="hero-proof-mark"><Icon name="layers" size={15} /></span>
-            <span><strong>Evidence first</strong><small>Findings stay connected to their sources</small></span>
           </div>
         </div>
-        <div className="hero-visual" aria-label="Live map of collected research evidence">
-          <div className="hero-visual-top"><span>YOUR RESEARCH UNIVERSE</span><span className={`hero-live ${health?.status === 'ok' ? 'hero-live-on' : ''}`}><i /> {health?.status === 'ok' ? 'API CONNECTED' : 'WORKSPACE'}</span></div>
-          <div className="orbit-stage" aria-hidden="true">
-            <div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" />
-            <span className="orbit-line orbit-line-a" /><span className="orbit-line orbit-line-b" />
-            <span className="orbit-node node-a" /><span className="orbit-node node-b" /><span className="orbit-node node-c" />
-            <span className="orbit-node node-d" /><span className="orbit-node node-e" />
-            <div className="orbit-core"><Icon name="target" size={25} /><span>MARKET<br />SIGNAL</span></div>
-            <div className="orbit-tag orbit-tag-sources"><Icon name="layers" size={13} /> SOURCES</div>
-            <div className="orbit-tag orbit-tag-offers"><Icon name="pulse" size={13} /> OFFERS</div>
-            <div className="orbit-tag orbit-tag-insight"><Icon name="compass" size={13} /> INSIGHTS</div>
+
+        <aside className="evidence-card" aria-label="Research evidence pipeline summary">
+          <div className="evidence-card-head">
+            <span>THE EVIDENCE PATH</span>
+            <span className={`hero-live ${health?.status === 'ok' ? 'hero-live-on' : ''}`}><i /> {health?.status === 'ok' ? 'CONNECTED' : 'CHECKING API'}</span>
           </div>
-          <div className="hero-visual-footer">
-            <span><strong>{num(offers)}</strong><small>offers</small></span><b />
-            <span><strong>{num(reviews)}</strong><small>reviews</small></span><b />
-            <span><strong>{num(regions)}</strong><small>regions</small></span>
-            <span className="hero-footer-caption">CONNECTED<br />EVIDENCE</span>
+          <div className="evidence-line" aria-hidden="true"><span /></div>
+          <div className="evidence-stages">
+            <div className="evidence-stage">
+              <span className="evidence-node"><Icon name="search" size={15} /></span>
+              <small>01 / COLLECT</small>
+              <strong>Source pages</strong>
+              <span>{latestRun ? `${num(latestRun.urls_succeeded)} in latest run` : 'No runs yet'}</span>
+            </div>
+            <div className="evidence-stage">
+              <span className="evidence-node"><Icon name="layers" size={15} /></span>
+              <small>02 / STRUCTURE</small>
+              <strong>Offers indexed</strong>
+              <span>{health ? num(offers) : '—'} in workspace</span>
+            </div>
+            <div className="evidence-stage">
+              <span className="evidence-node"><Icon name="pulse" size={15} /></span>
+              <small>03 / COMPARE</small>
+              <strong>Market signals</strong>
+              <span>{loading ? 'Updating…' : eventsError ? 'Unavailable' : `${num(events.length)} recent findings`}</span>
+            </div>
           </div>
-        </div>
-        <div className="hero-index" aria-hidden="true">01 <span>—</span> MARKET INTELLIGENCE</div>
+          <div className="evidence-card-foot">
+            <span>Every insight stays attached to its source</span>
+            <button onClick={() => onNavigate('evidence')} aria-label="Open evidence"><Icon name="arrow" size={14} /></button>
+          </div>
+        </aside>
       </header>
 
-      <section className="stat-row" aria-label="Totals">
-        <Stat label="Offers captured" value={num(offers)} note="structured price observations" />
-        <Stat label="Reviews indexed" value={num(reviews)} note="searchable review evidence" />
-        <Stat label="Regions" value={num(regions)} note="markets observed" />
-        <Stat
-          label="Routing"
-          value={health?.active_llm_provider || '—'}
-          note={health?.provider_tiers ? Object.entries(health.provider_tiers).map(([k, v]) => `${k}:${v}`).join(' ') : 'unconfigured'}
-          tone="muted"
-        />
+      <section className="stat-row desk-stats" aria-label="Research workspace totals">
+        <Stat label="Offers stored" value={health ? num(offers) : '—'} note="Structured price observations" />
+        <Stat label="Product observations" value={metrics ? num(products) : '—'} note="Across completed runs" />
+        <Stat label="Region checks" value={metrics ? num(regions) : '—'} note="Across completed runs" />
       </section>
+
+      {metricsError && (
+        <p className="data-warning" role="status">Workspace totals could not be loaded. Refresh to try again.</p>
+      )}
 
       <div className="split">
         <section className="panel">
           <div className="panel-head">
             <h2>Recent signals</h2>
-            <button className="btn-ghost" onClick={() => onNavigate('signals')}>
-              All signals
+            <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}>
+              <Icon name="refresh" size={14} /> Refresh
             </button>
           </div>
           {loading ? (
@@ -507,6 +540,13 @@ function Dashboard({ runId, onNavigate, health }) {
                 </li>
               ))}
             </ul>
+          ) : eventsError ? (
+            <Empty
+              title="Signals could not be loaded"
+              text="The API did not return the recent signal feed. Your research data has not been changed."
+              action="Try again"
+              onAction={() => setRefreshKey((key) => key + 1)}
+            />
           ) : (
             <Empty
               title="No signals yet"
@@ -519,38 +559,36 @@ function Dashboard({ runId, onNavigate, health }) {
 
         <section className="panel">
           <div className="panel-head">
-            <h2>Choose a research path</h2>
+            <h2>Choose your starting point</h2>
           </div>
           <ul className="choice-list">
             <li>
               <button onClick={() => onNavigate('run')}>
                 <span className="choice-title">
-                  <Icon name="target" size={16} /> Competitive run
+                  <Icon name="target" size={16} /> Compare competitors
                 </span>
                 <span className="choice-text">
-                  A company plus its competitors. Produces structured offers, regional prices and
-                  change-over-time insights.
+                  Compare a company against named competitors. Best for pricing, products, and regional changes.
                 </span>
               </button>
             </li>
             <li>
               <button onClick={() => onNavigate('deep')}>
                 <span className="choice-title">
-                  <Icon name="compass" size={16} /> Deep research
+                  <Icon name="compass" size={16} /> Investigate a market question
                 </span>
                 <span className="choice-text">
-                  One URL, a topic, or a comparison set. Produces a cited report, explicit gaps
-                  and a chat corpus.
+                  Start with a URL, topic, or comparison. Get a cited report and clear research gaps.
                 </span>
               </button>
             </li>
             <li>
               <button onClick={() => onNavigate('chat')}>
                 <span className="choice-title">
-                  <Icon name="chat" size={16} /> Research chat
+                  <Icon name="chat" size={16} /> Ask your evidence
                 </span>
                 <span className="choice-text">
-                  Questions answered only from captured evidence. Says so when it cannot answer.
+                  Ask questions about captured research. Answers include sources and say when evidence is missing.
                 </span>
               </button>
             </li>

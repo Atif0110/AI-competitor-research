@@ -541,6 +541,12 @@ API_KEY_REQUIRED=true
 PORT=8000
 ```
 
+For durable production data, use a managed PostgreSQL `DATABASE_URL`. The SQLite example is
+intended for a single API instance and stores its files under `/app/data`; if you keep SQLite on
+Northflank, attach persistent storage mounted at `/app/data` or redeployments can lose the database,
+reports, checkpoints, and local vector files. The in-memory job registry and scheduler also require a
+single API instance; do not scale this service horizontally until job state is moved to shared storage.
+
 ### Optional (if you have free keys)
 ```
 GROQ_API_KEY=your-groq-key
@@ -611,6 +617,8 @@ Set `CORS_ORIGINS` on Northflank to the exact Render frontend origin (for exampl
 requires it; never put it in `VITE_API_URL` or another `VITE_*` variable because those values are
 public in the built frontend. Set `DEEP_SEARCH_ENABLED=true` on the Northflank API service to enable
 topic and comparison discovery; `DEEP_LLM_ENABLED=true` controls model-assisted extraction.
+Use the public HTTP domain shown under the Northflank service's networking/ports settings. The
+same API base URL should be used for Render's `VITE_API_URL` and the GitHub keep-warm workflow.
 
 ---
 
@@ -700,13 +708,13 @@ tests/                   Unit, failure-mode and production-readiness tests
 
 | Component | Status | URL |
 |---|---|---|
-| Backend API | ✅ Live on Northflank | `https://p01--ai-research-platform--tqfz8cfnnfsv.code.run` |
+| Backend API | ✅ Configured on Northflank | `https://p01--ai-research-platform--tqfz8cfnnfsv.code.run` |
 | Frontend | ✅ Live on Render Static | `https://ai-competitor-research-web.onrender.com` |
-| CI/CD | ✅ GitHub Actions | All green |
-| Tests | ✅ 77 passing | `pytest -q` |
+| CI/CD | ✅ GitHub Actions | Backend tests, readiness audit, and frontend build |
+| Tests | ✅ 85 passing locally | `pytest -q` |
 | Deep Research | ✅ Implemented | `/research/deep` |
 | Research Chat | ✅ Implemented | `/research/chat` |
-| Frontend UI | ✅ Redesigned | Space Grotesk + grain + depth |
+| Frontend UI | ✅ Dark research desk | Source-to-insight path, grouped navigation, reduced visual clutter |
 
 ---
 
@@ -723,8 +731,8 @@ tests/                   Unit, failure-mode and production-readiness tests
 - [x] Keep-warm workflow (GitHub Actions, free)
 - [x] Backend deployed on Northflank (free, no card)
 - [x] Frontend on Render Static (free, auto-deploy)
-- [x] Frontend redesigned (Space Grotesk, grain, depth, skeletons)
-- [x] 77 tests passing
+- [x] Dark research desk UI with grouped navigation, evidence path, and responsive layout
+- [x] 85 tests passing locally
 - [x] API health endpoint working
 - [x] Deep research + chat endpoints working
 - [x] Keep-warm workflow added
