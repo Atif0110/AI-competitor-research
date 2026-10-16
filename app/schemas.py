@@ -223,6 +223,7 @@ class RunMetrics(BaseModel):
     extraction_accuracy: float = 0.0
     runtime_s: float = 0.0
     llm_calls: int = 0
+    estimated_tokens: int = 0
     provider_attempts: int = 0
     fallbacks: int = 0
     providers_used: List[str] = Field(default_factory=list)

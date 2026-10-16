@@ -2230,6 +2230,41 @@ select {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+.run-history { margin-top: 22px; }
+.run-history .panel-head > div p { margin: 5px 0 0; font-size: 12px; }
+.history-list { display: grid; gap: 7px; }
+.history-row {
+  display: grid;
+  grid-template-columns: 34px minmax(150px, 1fr) minmax(210px, 1.15fr) auto 16px;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255,255,255,.018);
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease), transform 160ms var(--ease);
+}
+.history-row:hover { background: var(--surface-3); border-color: var(--line-strong); transform: translateY(-1px); }
+.history-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: var(--accent); background: var(--accent-wash); }
+.history-mark-deep { color: #a5b4fc; background: rgba(129,140,248,.12); }
+.history-main, .history-quality { display: grid; gap: 4px; min-width: 0; }
+.history-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.history-main small, .history-quality small { color: var(--muted); font-size: 11px; }
+.history-quality { justify-self: stretch; }
+.run-state .facts { grid-template-columns: repeat(2, minmax(0,1fr)); }
+
+@media (max-width: 740px) {
+  .history-row { grid-template-columns: 32px minmax(0,1fr) auto; gap: 10px; }
+  .history-quality { grid-column: 2 / 3; grid-row: 2; }
+  .history-row > .badge { grid-column: 3; grid-row: 1; }
+  .history-row > svg:last-child { display: none; }
+  .run-state .facts { grid-template-columns: 1fr; }
+}
+
 .table tbody tr {
   transition: background-color 150ms var(--ease);
 }

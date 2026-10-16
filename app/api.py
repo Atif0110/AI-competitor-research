@@ -104,7 +104,14 @@ def _research_rate_limit(request: Request) -> None:
 
 def _set_job(job_id: str, **updates) -> None:
     with _jobs_lock:
-        _jobs.setdefault(job_id, {}).update(updates)
+        job = _jobs.setdefault(job_id, {})
+        job.update(updates)
+        job.setdefault("job_id", job_id)
+        snapshot = dict(job)
+    try:
+        _store.save_job(job_id, snapshot)
+    except Exception:
+        logger.exception("could not persist research job %s", job_id)
 
 
 def _run_job(job_id: str, target: CompetitorTarget) -> None:
@@ -150,6 +157,10 @@ def create_app():
     from fastapi.responses import FileResponse
 
     settings.ensure_dirs()
+    try:
+        _store.reconcile_jobs_after_restart()
+    except Exception:
+        logger.exception("could not reconcile persisted research jobs on startup")
     if settings.api_key_required and not settings.demo_mode and not settings.api_key:
         logger.error("API_KEY_REQUIRED=true but API_KEY is missing; live service will reject protected endpoints")
 
@@ -223,7 +234,16 @@ def create_app():
         if not is_safe_run_id(job_id):
             raise HTTPException(status_code=422, detail="invalid job_id")
         with _jobs_lock:
-            job = _jobs.get(job_id)
+            job = dict(_jobs[job_id]) if job_id in _jobs else None
+        if job is None:
+            job = _store.get_job(job_id)
+        if job is None:
+            metrics = next((item for item in _store.recent_runs(limit=100) if item.get("run_id") == job_id), None)
+            if metrics:
+                return {
+                    "job_id": job_id, "status": "completed", "events": [],
+                    "result": {"duration_s": metrics.get("runtime_s", 0), "metrics": metrics},
+                }
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
         return {"job_id": job_id, **job}
@@ -388,6 +408,52 @@ def create_app():
     @app.get("/metrics/aggregate")
     def metrics_aggregate():
         return _store.aggregate_metrics()
+
+    @app.get("/research/runs")
+    def research_runs(limit: int = 25):
+        """Compact, durable history across the two existing research paths."""
+        limit = max(1, min(limit, 100))
+        unique = {}
+        for job in _store.recent_jobs(limit=limit):
+            if job.get("status") in {"queued", "running", "failed", "interrupted"}:
+                target = job.get("target") or {}
+                result = job.get("result") or {}
+                metrics = result.get("metrics") or {}
+                job_run = {
+                    "run_id": job.get("job_id"), "kind": "competitive",
+                    "status": job.get("status"), "title": target.get("company") or "Competitive research",
+                    "created_at": job.get("started_at") or job.get("created_at"),
+                    "duration_s": result.get("duration_s") or metrics.get("runtime_s"),
+                    "metrics": metrics, "error": job.get("error"),
+                }
+                unique[("competitive", job.get("job_id"))] = job_run
+        for metrics in _store.recent_runs(limit=limit):
+            run = {
+                "run_id": metrics["run_id"], "kind": "competitive", "status": "completed",
+                "title": metrics.get("target_company") or "Competitive research",
+                "created_at": metrics.get("started_at"), "duration_s": metrics.get("runtime_s"),
+                "metrics": metrics,
+            }
+            key = (run["kind"], run["run_id"])
+            if key in unique:
+                # Preserve the durable job state, but add final metrics if
+                # the pipeline completed before a later job-finalization error.
+                unique[key].update({"metrics": metrics, "duration_s": metrics.get("runtime_s")})
+            else:
+                unique[key] = run
+        try:
+            for run in _deep_pipeline().documents.list_runs(limit=limit):
+                coverage = run.get("coverage") or {}
+                deep_run = {
+                    "run_id": run.get("run_id"), "kind": "deep", "status": run.get("status"),
+                    "title": run.get("title") or run.get("question") or "Deep research",
+                    "created_at": run.get("created_at"), "duration_s": coverage.get("duration_s"),
+                    "coverage": coverage,
+                }
+                unique[("deep", run.get("run_id"))] = deep_run
+        except Exception:
+            logger.exception("could not load deep-research history")
+        return sorted(unique.values(), key=lambda item: item.get("created_at") or "", reverse=True)[:limit]
 
     @app.get("/proxies/status")
     def proxies_status():

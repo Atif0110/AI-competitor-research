@@ -86,6 +86,16 @@ class DeepResearchPipeline:
         request: ResearchRequest,
         run_id: Optional[str] = None,
     ) -> DeepResearchResult:
+        if self.llm and hasattr(self.llm, "usage_scope"):
+            with self.llm.usage_scope():
+                return self._run_with_usage_scope(request, run_id)
+        return self._run_with_usage_scope(request, run_id)
+
+    def _run_with_usage_scope(
+        self,
+        request: ResearchRequest,
+        run_id: Optional[str] = None,
+    ) -> DeepResearchResult:
         run_id = run_id or uuid.uuid4().hex[:12]
         started = time.monotonic()
         errors: List[str] = []
@@ -266,6 +276,10 @@ class DeepResearchPipeline:
             result.status = status
             result.errors = errors
             result.duration_s = round(time.monotonic() - started, 2)
+            llm_end = self.llm.telemetry() if self.llm and hasattr(self.llm, "telemetry") else {}
+            result.coverage.duration_s = result.duration_s
+            result.coverage.llm_calls = int(llm_end.get("calls", 0))
+            result.coverage.estimated_tokens = int(llm_end.get("estimated_tokens", 0))
 
             self.documents.update_run(
                 run_id,
@@ -290,6 +304,10 @@ class DeepResearchPipeline:
             result.status = ResearchStatus.failed
             result.errors = errors + [str(exc)]
             result.duration_s = round(time.monotonic() - started, 2)
+            llm_end = self.llm.telemetry() if self.llm and hasattr(self.llm, "telemetry") else {}
+            result.coverage.duration_s = result.duration_s
+            result.coverage.llm_calls = int(llm_end.get("calls", 0))
+            result.coverage.estimated_tokens = int(llm_end.get("estimated_tokens", 0))
             self.documents.update_run(
                 run_id,
                 status=ResearchStatus.failed.value,
@@ -414,6 +432,7 @@ class DeepResearchPipeline:
             coverage=coverage,
             pages=self.documents.pages_for_run(run_id),
             errors=[run["error"]] if run.get("error") else [],
+            duration_s=coverage.duration_s,
         )
 
 

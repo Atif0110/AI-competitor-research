@@ -461,9 +461,10 @@ The scheduler can be configured through the application/API rather than requirin
 
 **Production limitation**
 
-The current scheduler and research job registry are designed around a single API process.
-
-A horizontally scaled production deployment should move job state and scheduling responsibilities to durable/distributed infrastructure.
+Research job events and results are durable in the relational database, but job execution still runs
+as a background task inside the API process. Keep one API process until execution moves to a
+distributed queue. The scheduler and rate limiter are also process-local and should not be scaled
+horizontally without shared coordination.
 
 ---
 
@@ -544,8 +545,15 @@ PORT=8000
 For durable production data, use a managed PostgreSQL `DATABASE_URL`. The SQLite example is
 intended for a single API instance and stores its files under `/app/data`; if you keep SQLite on
 Northflank, attach persistent storage mounted at `/app/data` or redeployments can lose the database,
-reports, checkpoints, and local vector files. The in-memory job registry and scheduler also require a
-single API instance; do not scale this service horizontally until job state is moved to shared storage.
+reports, checkpoints, and local vector files. Research job history and progress are stored in the
+relational database. If the API restarts mid-run, the saved entry is marked interrupted; start a new
+run to retry. The scheduler and in-process rate limiter are single-instance features, so keep one API
+instance until those are moved to shared coordination.
+
+The Overview keeps recent comparative and deep-research runs together. Run detail shows source
+fetches, failures, skips, extraction outcomes, elapsed time, and LLM calls. Token usage is shown as
+an estimate based on prompt and response character counts because provider responses do not
+consistently return tokenizer usage; it is not a billing figure.
 
 ### Optional (if you have free keys)
 ```

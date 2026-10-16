@@ -191,6 +191,9 @@ class ResearchCoverage(BaseModel):
     budget_exhausted: bool = False
     llm_enabled: bool = False
     provider: Optional[str] = None
+    duration_s: float = 0.0
+    llm_calls: int = 0
+    estimated_tokens: int = 0
 
 
 class DeepResearchResult(BaseModel):

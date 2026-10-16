@@ -43,8 +43,12 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     urls_attempted INTEGER, urls_succeeded INTEGER, urls_failed INTEGER,
     scraping_success_rate REAL, retries_used INTEGER, extraction_attempts INTEGER,
     extraction_successes INTEGER, extraction_failures INTEGER, extractions_skipped INTEGER DEFAULT 0, extraction_accuracy REAL,
-    runtime_s REAL, llm_calls INTEGER, provider_attempts INTEGER, fallbacks INTEGER,
+    runtime_s REAL, llm_calls INTEGER, estimated_tokens INTEGER DEFAULT 0, provider_attempts INTEGER, fallbacks INTEGER,
     providers_used TEXT, scrapers_used TEXT, errors TEXT
+);
+CREATE TABLE IF NOT EXISTS research_jobs (
+    job_id TEXT PRIMARY KEY, status TEXT NOT NULL, payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, company TEXT, website TEXT,
@@ -79,8 +83,12 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     urls_attempted INTEGER, urls_succeeded INTEGER, urls_failed INTEGER,
     scraping_success_rate DOUBLE PRECISION, retries_used INTEGER, extraction_attempts INTEGER,
     extraction_successes INTEGER, extraction_failures INTEGER, extractions_skipped INTEGER DEFAULT 0, extraction_accuracy DOUBLE PRECISION,
-    runtime_s DOUBLE PRECISION, llm_calls INTEGER, provider_attempts INTEGER, fallbacks INTEGER,
+    runtime_s DOUBLE PRECISION, llm_calls INTEGER, estimated_tokens INTEGER DEFAULT 0, provider_attempts INTEGER, fallbacks INTEGER,
     providers_used TEXT, scrapers_used TEXT, errors TEXT
+);
+CREATE TABLE IF NOT EXISTS research_jobs (
+    job_id TEXT PRIMARY KEY, status TEXT NOT NULL, payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS schedules (
     id BIGSERIAL PRIMARY KEY, name TEXT, company TEXT, website TEXT,
@@ -100,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_offers_series ON offers(product_name, region, com
 
 _NEW_COLUMNS = [
     ("run_metrics", "extractions_skipped", "INTEGER DEFAULT 0"),
+    ("run_metrics", "estimated_tokens", "INTEGER DEFAULT 0"),
     ("offers", "competitor", "TEXT"), ("offers", "canonical_url", "TEXT"),
     ("offers", "normalized_price_usd", "REAL"), ("offers", "exchange_rate", "REAL"),
     ("offers", "exchange_rate_timestamp", "TEXT"), ("offers", "offer_key", "TEXT"),
@@ -145,6 +154,9 @@ class OfferStore:
                 conn.execute(_PG_SCHEMA)
                 conn.execute(
                     "ALTER TABLE run_metrics ADD COLUMN IF NOT EXISTS extractions_skipped INTEGER DEFAULT 0"
+                )
+                conn.execute(
+                    "ALTER TABLE run_metrics ADD COLUMN IF NOT EXISTS estimated_tokens INTEGER DEFAULT 0"
                 )
             else:
                 conn.executescript(_SQLITE_SCHEMA)
@@ -301,6 +313,48 @@ class OfferStore:
         return row["content"] if row else None
 
     # ---------------- run metrics ----------------
+    def save_job(self, job_id: str, payload: dict) -> None:
+        """Persist the latest job state so polling survives API restarts."""
+        status = str(payload.get("status") or "queued")
+        values = (job_id, status, json.dumps(payload, ensure_ascii=False),
+                  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        with self._connect() as conn:
+            self._execute(
+                conn,
+                "INSERT INTO research_jobs (job_id,status,payload,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET status=excluded.status, payload=excluded.payload, updated_at=excluded.updated_at",
+                values,
+            )
+
+    def get_job(self, job_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = self._execute(conn, "SELECT payload FROM research_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def recent_jobs(self, limit: int = 20) -> List[dict]:
+        with self._connect() as conn:
+            rows = self._execute(conn, "SELECT payload FROM research_jobs ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        jobs = []
+        for row in rows:
+            try:
+                jobs.append(json.loads(row["payload"] or "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return jobs
+
+    def reconcile_jobs_after_restart(self) -> None:
+        """Do not leave persisted work looking active after its worker died."""
+        for job in self.recent_jobs(limit=10000):
+            if job.get("status") in {"queued", "running"} and job.get("job_id"):
+                job["status"] = "interrupted"
+                job["error"] = "The API restarted before this run finished. Start a new run to continue."
+                self.save_job(job["job_id"], job)
+
     def record_run(self, m: dict) -> None:
         values = (
             m["run_id"], m.get("started_at", ""), m.get("mode", ""), m.get("target_company", ""),
@@ -309,7 +363,8 @@ class OfferStore:
             m.get("scraping_success_rate", 0.0), m.get("retries_used", 0), m.get("extraction_attempts", 0),
             m.get("extraction_successes", 0), m.get("extraction_failures", 0),
             m.get("extractions_skipped", 0), m.get("extraction_accuracy", 0.0),
-            m.get("runtime_s", 0.0), m.get("llm_calls", 0), m.get("provider_attempts", 0), m.get("fallbacks", 0),
+            m.get("runtime_s", 0.0), m.get("llm_calls", 0), m.get("estimated_tokens", 0),
+            m.get("provider_attempts", 0), m.get("fallbacks", 0),
             json.dumps(m.get("providers_used", [])), json.dumps(m.get("scrapers_used", [])),
             json.dumps(m.get("errors", [])),
         )
@@ -317,9 +372,9 @@ class OfferStore:
             (run_id, started_at, mode, target_company, competitors, regions, products,
              urls_discovered, urls_attempted, urls_succeeded, urls_failed,
              scraping_success_rate, retries_used, extraction_attempts, extraction_successes,
-             extraction_failures, extractions_skipped, extraction_accuracy, runtime_s, llm_calls, provider_attempts,
+             extraction_failures, extractions_skipped, extraction_accuracy, runtime_s, llm_calls, estimated_tokens, provider_attempts,
              fallbacks, providers_used, scrapers_used, errors)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(run_id) DO UPDATE SET
               started_at=excluded.started_at, mode=excluded.mode, target_company=excluded.target_company,
               competitors=excluded.competitors, regions=excluded.regions, products=excluded.products,
@@ -329,7 +384,7 @@ class OfferStore:
               extraction_attempts=excluded.extraction_attempts, extraction_successes=excluded.extraction_successes,
               extraction_failures=excluded.extraction_failures, extractions_skipped=excluded.extractions_skipped,
               extraction_accuracy=excluded.extraction_accuracy,
-              runtime_s=excluded.runtime_s, llm_calls=excluded.llm_calls,
+              runtime_s=excluded.runtime_s, llm_calls=excluded.llm_calls, estimated_tokens=excluded.estimated_tokens,
               provider_attempts=excluded.provider_attempts, fallbacks=excluded.fallbacks,
               providers_used=excluded.providers_used, scrapers_used=excluded.scrapers_used, errors=excluded.errors"""
         with self._connect() as conn:

@@ -433,6 +433,17 @@ class Pipeline:
         target: CompetitorTarget,
         run_id: Optional[str] = None,
     ) -> PipelineResult:
+        client = self.extractor.client
+        if hasattr(client, "usage_scope"):
+            with client.usage_scope():
+                return self._run_with_usage_scope(target, run_id)
+        return self._run_with_usage_scope(target, run_id)
+
+    def _run_with_usage_scope(
+        self,
+        target: CompetitorTarget,
+        run_id: Optional[str] = None,
+    ) -> PipelineResult:
         start = time.monotonic()
 
         run_id = (
@@ -954,6 +965,7 @@ class Pipeline:
             ),
             runtime_s=duration,
             llm_calls=telemetry["calls"],
+            estimated_tokens=telemetry.get("estimated_tokens", 0),
             provider_attempts=(
                 telemetry[
                     "provider_attempts"

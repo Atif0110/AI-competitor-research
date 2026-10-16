@@ -222,7 +222,7 @@ function App() {
   const [page, setPage] = useState('dashboard');
   const [health, setHealth] = useState(null);
   const [toast, setToast] = useState('');
-  const [runId, setRunId] = useState(null);
+  const [runId, setRunId] = useState(() => sessionStorage.getItem('acr_last_run_id'));
   const [deepRun, setDeepRun] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -248,6 +248,7 @@ function App() {
     try {
       const result = await api('/research/jobs', { method: 'POST', body: JSON.stringify(target) });
       setRunId(result.job_id);
+      sessionStorage.setItem('acr_last_run_id', result.job_id);
       setPage('run');
       setNavOpen(false);
     } catch (error) {
@@ -269,6 +270,22 @@ function App() {
   const clearKey = () => {
     sessionStorage.removeItem(STORAGE_KEY);
     setToast('Workspace key cleared for this browser tab.');
+  };
+
+  const openSavedRun = async (run) => {
+    if (run.kind === 'deep') {
+      try {
+        const saved = await api(`/research/deep/runs/${run.run_id}`);
+        setDeepRun(saved);
+        setPage('deep');
+      } catch (error) {
+        setToast(`Could not load saved run: ${error.message}`);
+      }
+      return;
+    }
+    setRunId(run.run_id);
+    sessionStorage.setItem('acr_last_run_id', run.run_id);
+    setPage('run');
   };
 
   const online = health?.status === 'ok';
@@ -373,7 +390,7 @@ function App() {
             </div>
           )}
 
-          {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} health={health} />}
+          {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} onOpenRun={openSavedRun} health={health} />}
           {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} />}
           {page === 'deep' && (
             <DeepResearch
@@ -406,9 +423,10 @@ function App() {
 /* ------------------------------------------------------------------ */
 /* overview                                                            */
 /* ------------------------------------------------------------------ */
-function Dashboard({ runId, onNavigate, health }) {
+function Dashboard({ runId, onNavigate, onOpenRun, health }) {
   const [metrics, setMetrics] = useState(null);
   const [events, setEvents] = useState([]);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [metricsError, setMetricsError] = useState(false);
   const [eventsError, setEventsError] = useState(false);
@@ -422,7 +440,8 @@ function Dashboard({ runId, onNavigate, health }) {
     Promise.allSettled([
       api('/metrics/aggregate'),
       api(`/insights/events${runId ? `?run_id=${runId}` : ''}`),
-    ]).then(([aggregateResult, activityResult]) => {
+      api('/research/runs?limit=8'),
+    ]).then(([aggregateResult, activityResult, historyResult]) => {
       if (!current) return;
       if (aggregateResult.status === 'fulfilled' && aggregateResult.value) {
         setMetrics(aggregateResult.value);
@@ -436,6 +455,7 @@ function Dashboard({ runId, onNavigate, health }) {
         setEvents([]);
         setEventsError(true);
       }
+      setHistory(historyResult.status === 'fulfilled' && Array.isArray(historyResult.value) ? historyResult.value : []);
     }).finally(() => {
       if (current) setLoading(false);
     });
@@ -595,6 +615,37 @@ function Dashboard({ runId, onNavigate, health }) {
           </ul>
         </section>
       </div>
+
+      <section className="panel run-history">
+        <div className="panel-head">
+          <div><h2>Research history</h2><p className="muted">Saved runs with source quality and compute usage.</p></div>
+          <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}>
+            <Icon name="refresh" size={14} /> Refresh
+          </button>
+        </div>
+        {history.length ? (
+          <div className="history-list">
+            {history.map((run) => {
+              const quality = run.kind === 'deep' ? run.coverage : run.metrics;
+              const sources = run.kind === 'deep'
+                ? `${num(quality?.pages_fetched)} fetched · ${num(quality?.pages_failed)} failed · ${num(quality?.pages_skipped)} skipped`
+                : `${num(quality?.urls_succeeded)} fetched · ${num(quality?.urls_failed)} failed · ${num(quality?.extraction_failures)} extraction gaps`;
+              const tokens = quality?.estimated_tokens ? `~${num(quality.estimated_tokens)} tokens` : 'token estimate unavailable';
+              return (
+                <button className="history-row" key={`${run.kind}-${run.run_id}`} onClick={() => onOpenRun(run)}>
+                  <span className={`history-mark ${run.kind === 'deep' ? 'history-mark-deep' : ''}`}><Icon name={run.kind === 'deep' ? 'compass' : 'target'} size={15} /></span>
+                  <span className="history-main"><strong>{run.title}</strong><small>{run.kind === 'deep' ? 'Deep research' : 'Competitive run'} · {run.created_at ? new Date(run.created_at).toLocaleString() : 'time unavailable'}</small></span>
+                  <span className="history-quality"><small>{sources}</small><small>{num(run.duration_s)}s · {num(quality?.llm_calls)} LLM calls · {tokens}</small></span>
+                  <Badge tone={run.status === 'completed' ? 'good' : ['failed', 'interrupted'].includes(run.status) ? 'bad' : 'busy'}>{pretty(run.status)}</Badge>
+                  <Icon name="arrow" size={14} />
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <Empty title="No saved runs yet" text="Completed and in-progress runs will appear here with source outcomes and usage." />
+        )}
+      </section>
     </>
   );
 }
@@ -864,6 +915,10 @@ function CompetitiveRun({ onStart, runId }) {
                 )}
                 {job.result && (
                   <dl className="facts">
+                    <div><dt>Runtime</dt><dd className="mono">{num(job.result.duration_s)}s</dd></div>
+                    <div><dt>Source pages</dt><dd className="mono">{num(job.result.metrics?.urls_succeeded)} fetched · {num(job.result.metrics?.urls_failed)} failed</dd></div>
+                    <div><dt>Extraction</dt><dd className="mono">{num(job.result.metrics?.extraction_successes)} passed · {num(job.result.metrics?.extraction_failures)} failed · {num(job.result.metrics?.extractions_skipped)} skipped</dd></div>
+                    <div><dt>Compute</dt><dd className="mono">{num(job.result.metrics?.llm_calls)} LLM calls · {job.result.metrics?.estimated_tokens ? `~${num(job.result.metrics.estimated_tokens)} estimated tokens` : job.result.metrics?.llm_calls ? 'token estimate unavailable' : '0 estimated tokens'}</dd></div>
                     {job.result.offers != null && (
                       <div><dt>Offers captured</dt><dd className="mono">{num(job.result.offers)}</dd></div>
                     )}
@@ -1037,10 +1092,10 @@ function DeepResearch({ result, onResult, onChat, notify }) {
       {result && (
         <>
           <section className="stat-row" aria-label="Coverage">
-            <Stat label="Status" value={pretty(result.status)} note={`${result.duration_s}s`} />
-            <Stat label="Pages read" value={num(coverage?.pages_fetched)} note={`${num(coverage?.pages_failed)} failed`} />
+            <Stat label="Status" value={pretty(result.status)} note={`${result.duration_s}s elapsed`} />
+            <Stat label="Source quality" value={`${num(coverage?.pages_fetched)} fetched`} note={`${num(coverage?.pages_failed)} failed · ${num(coverage?.pages_skipped)} skipped`} />
             <Stat label="Sections" value={num(coverage?.sections)} note={`${num(coverage?.facts)} facts extracted`} />
-            <Stat label="Evidence" value={num(coverage?.characters)} unit=" chars" note={coverage?.search_backend ? `search: ${coverage.search_backend}` : 'no web search'} />
+            <Stat label="Run usage" value={`${num(coverage?.llm_calls)} calls`} note={`${coverage?.estimated_tokens ? `~${num(coverage.estimated_tokens)} estimated tokens` : coverage?.llm_calls ? 'token estimate unavailable' : '0 estimated tokens'} · ${num(coverage?.characters)} evidence chars`} />
           </section>
 
           <section className="panel">
