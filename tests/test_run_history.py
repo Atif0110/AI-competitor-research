@@ -156,3 +156,29 @@ def test_competitive_run_chat_is_scoped_and_cited(tmp_path, monkeypatch):
     history = client.get("/research/chat/chat-session-123")
     assert history.status_code == 200
     assert len(history.json()["messages"]) == 2
+
+
+def test_job_progress_persists_current_phase_and_bounds_event_log(monkeypatch):
+    import app.api as api_module
+
+    saved = {}
+
+    class Store:
+        @staticmethod
+        def save_job(job_id, payload):
+            saved["job_id"] = job_id
+            saved.update(payload)
+
+    old_jobs = api_module._jobs
+    monkeypatch.setattr(api_module, "_jobs", {
+        "progress-123": {"job_id": "progress-123", "status": "running",
+                          "events": [{"event": f"phase-{i}"} for i in range(220)]}
+    })
+    monkeypatch.setattr(api_module, "_store", Store())
+    try:
+        api_module._progress_for_job("progress-123", {"event": "extraction_started"})
+        assert len(saved["events"]) == 200
+        assert saved["current_event"]["event"] == "extraction_started"
+        assert saved["status"] == "running"
+    finally:
+        api_module._jobs = old_jobs

@@ -294,6 +294,11 @@ function App() {
     setPage('chat');
   };
 
+  const clearCurrentRun = () => {
+    sessionStorage.removeItem('acr_last_run_id');
+    setRunId(null);
+  };
+
   const online = health?.status === 'ok';
   const title = NAV.find((entry) => entry[0] === page)?.[1] || 'Overview';
 
@@ -397,7 +402,7 @@ function App() {
           )}
 
           {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} onOpenRun={openSavedRun} health={health} />}
-          {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} />}
+          {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onClearRun={clearCurrentRun} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} />}
           {page === 'deep' && (
             <DeepResearch
               result={deepRun}
@@ -734,8 +739,8 @@ function ResearchPipeline({ status, events }) {
         {(events || []).slice(-4).reverse().map((event, index) => (
           <li className={`event-row${event.event === 'extraction_failed' ? ' event-bad' : event.event === 'extraction_skipped' ? ' event-skipped' : ''}`} key={`${event.timestamp}-${index}`}>
             <span className="event-time mono">{new Date(event.timestamp).toLocaleTimeString()}</span>
-            <span className="event-name">{event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : pretty(event.event)}</span>
-            {(event.reason || event.error) && <small className="event-detail">{event.reason || event.error}</small>}
+            <span className="event-name">{event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : event.event === 'extraction_started' ? 'Extracting offer · waiting for model' : event.event === 'review_extraction_completed' ? `Review scan complete · ${num(event.reviews_found)} reviews` : pretty(event.event)}</span>
+            {(event.reason || event.error || event.product_name) && <small className="event-detail">{event.reason || event.error || event.product_name}</small>}
             {event.url && (
               <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">
                 {short(event.url, 44)}
@@ -751,7 +756,7 @@ function ResearchPipeline({ status, events }) {
 /* ------------------------------------------------------------------ */
 /* competitive run                                                     */
 /* ------------------------------------------------------------------ */
-function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
+function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk }) {
   const [company, setCompany] = useState('');
   const [website, setWebsite] = useState('');
   const [products, setProducts] = useState('');
@@ -768,6 +773,7 @@ function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
   useEffect(() => {
     if (!runId) {
       setJob(null);
+      setLoadError('');
       return undefined;
     }
     let cancelled = false;
@@ -779,7 +785,14 @@ function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
         }
       })
       .catch((error) => {
-        if (!cancelled) setLoadError(error.message);
+        if (!cancelled) {
+          setJob(null);
+          if (/job not found/i.test(error.message)) {
+            const message = 'This run is no longer available on the API. It may have been created before durable history was configured or lost when the service restarted. Start a new run to continue.';
+            setLoadError(message);
+            sessionStorage.removeItem('acr_last_run_id');
+          } else setLoadError(error.message);
+        }
       });
     return () => {
       cancelled = true;
@@ -795,7 +808,13 @@ function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
           setJob(data);
           setLoadError('');
         })
-        .catch((error) => setLoadError(error.message));
+        .catch((error) => {
+          if (/job not found/i.test(error.message)) {
+            setJob(null);
+            sessionStorage.removeItem('acr_last_run_id');
+            setLoadError('The API no longer has this run. It may have restarted without persistent history, or this browser is showing a stale run. Start a new run; it will stop polling this missing job.');
+          } else setLoadError(error.message);
+        });
     }, 2000);
     return () => clearInterval(timer);
   }, [job]);
@@ -904,10 +923,24 @@ function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
                   Refresh
                 </button>
               )}
+              {job && ['queued', 'running'].includes(job.status) && (
+                <button className="btn-ghost" onClick={onClearRun} title="Stop viewing this run; the API worker continues in the background">
+                  Hide run
+                </button>
+              )}
             </div>
           </div>
 
-          {loadError && <p className="error-text">{loadError}</p>}
+          {loadError && (
+            <div className="run-load-error" role="alert">
+              <p className="error-text">{loadError}</p>
+              {runId && /no longer (available|has this run)/i.test(loadError) && (
+                <button className="btn-primary" onClick={onClearRun}>
+                  Start a new run
+                </button>
+              )}
+            </div>
+          )}
 
           {job ? (
             <>
@@ -921,7 +954,7 @@ function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
                 )}
                 <p className="muted">
                   {job.current_event?.event
-                    ? `${pretty(job.current_event.event)}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
+                    ? `${job.current_event.event === 'extraction_started' ? 'Waiting for product extraction response' : pretty(job.current_event.event)}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
                     : 'Waiting for the worker to pick this up.'}
                 </p>
                 {job.error && <p className="error-text">{job.error}</p>}
@@ -962,7 +995,7 @@ function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
                 )}
               </div>
             </>
-          ) : runId ? (
+          ) : runId && !/no longer (available|has this run)/i.test(loadError) ? (
             <Empty
               title="Loading run status"
               text={`Fetching ${runId} from the API…`}

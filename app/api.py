@@ -114,6 +114,15 @@ def _set_job(job_id: str, **updates) -> None:
         logger.exception("could not persist research job %s", job_id)
 
 
+def _progress_for_job(job_id: str, event: dict) -> None:
+    """Persist a bounded event history and the most recent worker activity."""
+    with _jobs_lock:
+        current = dict(_jobs.get(job_id) or {})
+    events = list(current.get("events") or [])
+    events.append(event)
+    _set_job(job_id, events=events[-200:], current_event=event)
+
+
 def _run_job(job_id: str, target: CompetitorTarget) -> None:
     events: list[dict] = []
     try:
@@ -124,12 +133,18 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
         )
         def on_progress(event: dict) -> None:
             events.append(event)
-            _set_job(job_id, events=list(events), current_event=event)
+            _progress_for_job(job_id, event)
         pipeline = Pipeline(store=_store, review_store=_reviews, progress_callback=on_progress)
         result = pipeline.run(target, run_id=job_id)
         chat_ready = False
         chat_error = None
         try:
+            _progress_for_job(job_id, {
+                "event": "chat_indexing_started",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "run_id": job_id,
+                "product_name": "preparing evidence for questions",
+            })
             _index_competitive_run_for_chat(_deep_pipeline().documents, job_id, target)
             chat_ready = True
         except Exception as exc:

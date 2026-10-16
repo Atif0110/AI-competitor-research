@@ -607,6 +607,14 @@ class Pipeline:
                 pages_scraped=stats.pages_scraped,
             )
 
+            self._progress(
+                "extraction_started",
+                run_id=run_id,
+                url=url,
+                region=region,
+                product_name="structured offer",
+            )
+
             stats.retries_used += (
                 _log_retries(log)
             )
@@ -695,6 +703,16 @@ class Pipeline:
                 for review in reviews:
                     self.review_store.add(
                         review
+                    )
+
+                if reviews:
+                    self._progress(
+                        "review_extraction_completed",
+                        run_id=run_id,
+                        url=url,
+                        region=region,
+                        product_name=offer.product_name,
+                        reviews_found=len(reviews),
                     )
 
             elif result.skipped:
