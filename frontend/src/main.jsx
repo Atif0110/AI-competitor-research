@@ -420,22 +420,45 @@ function Dashboard({ runId, onNavigate, health }) {
 
   return (
     <>
-      <Masthead
-        eyebrow="Intelligence workspace"
-        title="Market intelligence at a glance"
-        lede="Research competitors, compare offers, and keep every finding connected to its source."
-        actions={
-          <>
-            <button className="btn-primary" onClick={() => onNavigate('deep')}>
-              <Icon name="compass" size={15} />
-              Deep research
+      <header className="research-hero">
+        <div className="research-hero-copy">
+          <div className="hero-kicker"><span className="hero-kicker-dot" /> COMPETITIVE INTELLIGENCE, IN CONTEXT</div>
+          <h1>See the market<br />from <span>every angle.</span></h1>
+          <p>Turn competitor websites, offers, reviews and regional shifts into evidence you can act on.</p>
+          <div className="hero-actions">
+            <button className="hero-primary" onClick={() => onNavigate('deep')}>
+              <Icon name="compass" size={16} /> Explore a competitor <Icon name="arrow" size={15} />
             </button>
-            <button className="btn-ghost" onClick={() => onNavigate('run')}>
-              Competitive run
+            <button className="hero-secondary" onClick={() => onNavigate('run')}>
+              Build a comparison <Icon name="arrow" size={14} />
             </button>
-          </>
-        }
-      />
+          </div>
+          <div className="hero-proof">
+            <span className="hero-proof-mark"><Icon name="layers" size={15} /></span>
+            <span><strong>Evidence first</strong><small>Findings stay connected to their sources</small></span>
+          </div>
+        </div>
+        <div className="hero-visual" aria-label="Live map of collected research evidence">
+          <div className="hero-visual-top"><span>YOUR RESEARCH UNIVERSE</span><span className={`hero-live ${health?.status === 'ok' ? 'hero-live-on' : ''}`}><i /> {health?.status === 'ok' ? 'API CONNECTED' : 'WORKSPACE'}</span></div>
+          <div className="orbit-stage" aria-hidden="true">
+            <div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" />
+            <span className="orbit-line orbit-line-a" /><span className="orbit-line orbit-line-b" />
+            <span className="orbit-node node-a" /><span className="orbit-node node-b" /><span className="orbit-node node-c" />
+            <span className="orbit-node node-d" /><span className="orbit-node node-e" />
+            <div className="orbit-core"><Icon name="target" size={25} /><span>MARKET<br />SIGNAL</span></div>
+            <div className="orbit-tag orbit-tag-sources"><Icon name="layers" size={13} /> SOURCES</div>
+            <div className="orbit-tag orbit-tag-offers"><Icon name="pulse" size={13} /> OFFERS</div>
+            <div className="orbit-tag orbit-tag-insight"><Icon name="compass" size={13} /> INSIGHTS</div>
+          </div>
+          <div className="hero-visual-footer">
+            <span><strong>{num(offers)}</strong><small>offers</small></span><b />
+            <span><strong>{num(reviews)}</strong><small>reviews</small></span><b />
+            <span><strong>{num(regions)}</strong><small>regions</small></span>
+            <span className="hero-footer-caption">CONNECTED<br />EVIDENCE</span>
+          </div>
+        </div>
+        <div className="hero-index" aria-hidden="true">01 <span>—</span> MARKET INTELLIGENCE</div>
+      </header>
 
       <section className="stat-row" aria-label="Totals">
         <Stat label="Offers captured" value={num(offers)} note="structured price observations" />
