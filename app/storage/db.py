@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS raw_evidence (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT, source_url TEXT, content_hash TEXT, scraped_at TEXT, content TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_dedup ON raw_evidence(source_url, content_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_dedup ON raw_evidence(run_id, source_url, content_hash);
 CREATE INDEX IF NOT EXISTS idx_evidence_run ON raw_evidence(run_id, source_url);
 """
 
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS raw_evidence (
     id BIGSERIAL PRIMARY KEY,
     run_id TEXT, source_url TEXT, content_hash TEXT, scraped_at TEXT, content TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_dedup ON raw_evidence(source_url, content_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_dedup ON raw_evidence(run_id, source_url, content_hash);
 CREATE INDEX IF NOT EXISTS idx_evidence_run ON raw_evidence(run_id, source_url);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_offers_key ON offers(offer_key);
 CREATE INDEX IF NOT EXISTS idx_offers_canon ON offers(canonical_product_id, region);
@@ -152,6 +152,8 @@ class OfferStore:
         with self._connect() as conn:
             if self._postgres:
                 conn.execute(_PG_SCHEMA)
+                conn.execute("DROP INDEX IF EXISTS idx_evidence_dedup")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_dedup ON raw_evidence(run_id, source_url, content_hash)")
                 conn.execute(
                     "ALTER TABLE run_metrics ADD COLUMN IF NOT EXISTS extractions_skipped INTEGER DEFAULT 0"
                 )
@@ -161,6 +163,8 @@ class OfferStore:
             else:
                 conn.executescript(_SQLITE_SCHEMA)
                 self._migrate(conn)
+                conn.execute("DROP INDEX IF EXISTS idx_evidence_dedup")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_dedup ON raw_evidence(run_id, source_url, content_hash)")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_offers_key ON offers(offer_key)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_canon ON offers(canonical_product_id, region)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_series ON offers(product_name, region, competitor, scraped_at)")
@@ -290,7 +294,7 @@ class OfferStore:
         with self._connect() as conn:
             self._execute(conn,
                 "INSERT INTO raw_evidence (run_id, source_url, content_hash, scraped_at, content) "
-                "VALUES (?,?,?,?,?) ON CONFLICT(source_url, content_hash) DO NOTHING",
+                "VALUES (?,?,?,?,?) ON CONFLICT(run_id, source_url, content_hash) DO NOTHING",
                 (run_id, source_url, h, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), stored))
 
     def evidence_for_run(self, run_id: str, limit: int = 20) -> List[dict]:

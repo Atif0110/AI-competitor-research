@@ -99,3 +99,60 @@ def test_run_history_api_merges_research_paths_and_reopens_saved_job(tmp_path, m
     reopened = client.get("/research/jobs/comp-789")
     assert reopened.status_code == 200
     assert reopened.json()["result"]["duration_s"] == 8
+
+
+def test_evidence_is_retained_for_each_run_even_when_source_text_matches(tmp_path):
+    store = OfferStore(database_url=f"sqlite:///{tmp_path / 'per-run-evidence.db'}")
+    content = "The Pro plan is $29 per month."
+    store.save_evidence("run-one", "https://acme.example/pricing", content)
+    store.save_evidence("run-two", "https://acme.example/pricing", content)
+
+    assert len(store.evidence_for_run("run-one")) == 1
+    assert len(store.evidence_for_run("run-two")) == 1
+    assert store.get_evidence("https://acme.example/pricing", "run-two") == content
+
+
+def test_competitive_run_chat_is_scoped_and_cited(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    import app.api as api_module
+    from app.config import settings
+    from app.schemas import CompetitorTarget
+    from app.research.pipeline import DeepResearchPipeline  # initialize package exports before its store module
+    from app.storage.documents import DocumentStore
+
+    database_url = f"sqlite:///{tmp_path / 'competitive-chat.db'}"
+    store = OfferStore(database_url=database_url)
+    store.save_job("chat-run-123", {
+        "job_id": "chat-run-123", "status": "completed",
+        "target": {"company": "Acme Audio", "website": "https://acme.example"},
+        "events": [],
+    })
+    store.record_run({
+        "run_id": "chat-run-123", "started_at": "2026-10-16T12:00:00Z",
+        "mode": "live", "target_company": "Acme Audio", "runtime_s": 9,
+    })
+    store.save_evidence(
+        "chat-run-123", "https://acme.example/pricing",
+        "Pricing: The Pro plan costs $29 per month and includes unlimited projects.",
+    )
+    documents = DocumentStore(database_url=database_url)
+    monkeypatch.setattr(api_module, "_store", store)
+    monkeypatch.setattr(api_module, "_deep_pipeline", lambda: SimpleNamespace(documents=documents))
+    monkeypatch.setattr(settings, "api_key_required", False)
+    monkeypatch.setattr(settings, "llm_provider", "demo")
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    client = TestClient(api_module.app)
+
+    response = client.post("/research/chat", json={
+        "question": "What does the Pro plan cost per month?",
+        "run_id": "chat-run-123", "session_id": "chat-session-123",
+    })
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert answer["answerable"] is True
+    assert "$29" in answer["message"]
+    assert answer["citations"][0]["url"] == "https://acme.example/pricing"
+    history = client.get("/research/chat/chat-session-123")
+    assert history.status_code == 200
+    assert len(history.json()["messages"]) == 2

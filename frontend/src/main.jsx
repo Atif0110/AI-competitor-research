@@ -223,6 +223,7 @@ function App() {
   const [health, setHealth] = useState(null);
   const [toast, setToast] = useState('');
   const [runId, setRunId] = useState(() => sessionStorage.getItem('acr_last_run_id'));
+  const [chatRunId, setChatRunId] = useState(null);
   const [deepRun, setDeepRun] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -286,6 +287,11 @@ function App() {
     setRunId(run.run_id);
     sessionStorage.setItem('acr_last_run_id', run.run_id);
     setPage('run');
+  };
+
+  const askAboutRun = (id) => {
+    setChatRunId(id);
+    setPage('chat');
   };
 
   const online = health?.status === 'ok';
@@ -391,18 +397,18 @@ function App() {
           )}
 
           {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} onOpenRun={openSavedRun} health={health} />}
-          {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} />}
+          {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} />}
           {page === 'deep' && (
             <DeepResearch
               result={deepRun}
               onResult={setDeepRun}
-              onChat={() => setPage('chat')}
+              onChat={() => askAboutRun(deepRun?.run_id)}
               notify={setToast}
             />
           )}
           {page === 'evidence' && <Evidence runId={runId} notify={setToast} />}
           {page === 'signals' && <Signals runId={runId} />}
-          {page === 'chat' && <ResearchChat runId={deepRun?.run_id || null} notify={setToast} />}
+          {page === 'chat' && <ResearchChat runId={chatRunId || deepRun?.run_id || null} notify={setToast} />}
           {page === 'reports' && <Reports />}
         </div>
       </main>
@@ -427,6 +433,7 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
   const [metrics, setMetrics] = useState(null);
   const [events, setEvents] = useState([]);
   const [history, setHistory] = useState([]);
+  const [historyError, setHistoryError] = useState('');
   const [loading, setLoading] = useState(true);
   const [metricsError, setMetricsError] = useState(false);
   const [eventsError, setEventsError] = useState(false);
@@ -437,10 +444,11 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
     setLoading(true);
     setMetricsError(false);
     setEventsError(false);
+    setHistoryError('');
     Promise.allSettled([
       api('/metrics/aggregate'),
       api(`/insights/events${runId ? `?run_id=${runId}` : ''}`),
-      api('/research/runs?limit=8'),
+      api('/research/runs?limit=100'),
     ]).then(([aggregateResult, activityResult, historyResult]) => {
       if (!current) return;
       if (aggregateResult.status === 'fulfilled' && aggregateResult.value) {
@@ -455,7 +463,12 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
         setEvents([]);
         setEventsError(true);
       }
-      setHistory(historyResult.status === 'fulfilled' && Array.isArray(historyResult.value) ? historyResult.value : []);
+      if (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
+        setHistory(historyResult.value);
+      } else {
+        setHistory([]);
+        setHistoryError(historyResult.reason?.message || 'The API did not return saved runs.');
+      }
     }).finally(() => {
       if (current) setLoading(false);
     });
@@ -480,6 +493,9 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
             </button>
             <button className="desk-secondary" onClick={() => onNavigate('deep')}>
               Explore a question <Icon name="arrow" size={14} />
+            </button>
+            <button className="desk-secondary" onClick={() => document.getElementById('run-history')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+              Previous runs <span className="mono">{num(history.length)}</span>
             </button>
           </div>
         </div>
@@ -616,14 +632,16 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
         </section>
       </div>
 
-      <section className="panel run-history">
+      <section className="panel run-history" id="run-history">
         <div className="panel-head">
           <div><h2>Research history</h2><p className="muted">Saved runs with source quality and compute usage.</p></div>
           <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}>
             <Icon name="refresh" size={14} /> Refresh
           </button>
         </div>
-        {history.length ? (
+        {historyError ? (
+          <Empty title="Saved history could not be loaded" text={historyError} action="Retry history" onAction={() => setRefreshKey((key) => key + 1)} />
+        ) : history.length ? (
           <div className="history-list">
             {history.map((run) => {
               const quality = run.kind === 'deep' ? run.coverage : run.metrics;
@@ -733,7 +751,7 @@ function ResearchPipeline({ status, events }) {
 /* ------------------------------------------------------------------ */
 /* competitive run                                                     */
 /* ------------------------------------------------------------------ */
-function CompetitiveRun({ onStart, runId }) {
+function CompetitiveRun({ onStart, runId, onViewEvidence, onAsk }) {
   const [company, setCompany] = useState('');
   const [website, setWebsite] = useState('');
   const [products, setProducts] = useState('');
@@ -770,7 +788,7 @@ function CompetitiveRun({ onStart, runId }) {
 
   // Poll only while the job is actually in flight.
   useEffect(() => {
-    if (!job || ['completed', 'failed'].includes(job.status)) return undefined;
+    if (!job || ['completed', 'failed', 'interrupted'].includes(job.status)) return undefined;
     const timer = setInterval(() => {
       api(`/research/jobs/${job.job_id}`)
         .then((data) => {
@@ -784,7 +802,7 @@ function CompetitiveRun({ onStart, runId }) {
 
   // A visible clock, so a slow run never looks like a dead one.
   useEffect(() => {
-    if (!job || ['completed', 'failed'].includes(job.status)) return undefined;
+    if (!job || ['completed', 'failed', 'interrupted'].includes(job.status)) return undefined;
     const startedAt = job.started_at ? Date.parse(job.started_at) : Date.now();
     setElapsed(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
     const timer = setInterval(() => {
@@ -877,7 +895,7 @@ function CompetitiveRun({ onStart, runId }) {
             <h2>Run status</h2>
             <div className="panel-head-right">
               {runId && <span className="mono">{runId}</span>}
-              {job && ['completed', 'failed'].includes(job.status) && (
+              {job && ['completed', 'failed', 'interrupted'].includes(job.status) && (
                 <button
                   className="btn-ghost"
                   onClick={() => api(`/research/jobs/${runId}`).then(setJob).catch((e) => setLoadError(e.message))}
@@ -895,10 +913,10 @@ function CompetitiveRun({ onStart, runId }) {
             <>
               <ResearchPipeline status={job.status} events={job.events} />
               <div className="run-state">
-                <Badge tone={job.status === 'failed' ? 'bad' : job.status === 'completed' ? 'good' : 'busy'}>
+                <Badge tone={['failed', 'interrupted'].includes(job.status) ? 'bad' : job.status === 'completed' ? 'good' : 'busy'}>
                   {job.status}
                 </Badge>
-                {!['completed', 'failed'].includes(job.status) && (
+                {!['completed', 'failed', 'interrupted'].includes(job.status) && (
                   <span className="mono run-clock">{elapsed}s elapsed</span>
                 )}
                 <p className="muted">
@@ -919,8 +937,8 @@ function CompetitiveRun({ onStart, runId }) {
                     <div><dt>Source pages</dt><dd className="mono">{num(job.result.metrics?.urls_succeeded)} fetched · {num(job.result.metrics?.urls_failed)} failed</dd></div>
                     <div><dt>Extraction</dt><dd className="mono">{num(job.result.metrics?.extraction_successes)} passed · {num(job.result.metrics?.extraction_failures)} failed · {num(job.result.metrics?.extractions_skipped)} skipped</dd></div>
                     <div><dt>Compute</dt><dd className="mono">{num(job.result.metrics?.llm_calls)} LLM calls · {job.result.metrics?.estimated_tokens ? `~${num(job.result.metrics.estimated_tokens)} estimated tokens` : job.result.metrics?.llm_calls ? 'token estimate unavailable' : '0 estimated tokens'}</dd></div>
-                    {job.result.offers != null && (
-                      <div><dt>Offers captured</dt><dd className="mono">{num(job.result.offers)}</dd></div>
+                    {job.result.offers_captured != null && (
+                      <div><dt>Offers captured</dt><dd className="mono">{num(job.result.offers_captured)}</dd></div>
                     )}
                     {job.result.runs != null && (
                       <div><dt>Runs recorded</dt><dd className="mono">{num(job.result.runs)}</dd></div>
@@ -932,6 +950,15 @@ function CompetitiveRun({ onStart, runId }) {
                       <div><dt>Pages without priced offers</dt><dd className="mono">{num(job.result.extractions_skipped)}</dd></div>
                     )}
                   </dl>
+                )}
+                {job.status === 'completed' && (
+                  <div className="run-actions">
+                    <button className="btn-ghost" onClick={onViewEvidence}><Icon name="layers" size={15} /> View captured evidence</button>
+                    <button className="btn-primary" onClick={() => onAsk(runId)} disabled={job.chat_ready === false}>
+                      <Icon name="chat" size={15} /> Ask this run
+                    </button>
+                    {job.chat_error && <p className="error-text">Run completed, but chat indexing failed: {job.chat_error}</p>}
+                  </div>
                 )}
               </div>
             </>
@@ -1217,6 +1244,10 @@ function DeepResearch({ result, onResult, onChat, notify }) {
 /* ------------------------------------------------------------------ */
 function Evidence({ runId, notify }) {
   const [rows, setRows] = useState([]);
+  const [sources, setSources] = useState([]);
+  const [sourceText, setSourceText] = useState('');
+  const [sourceSelected, setSourceSelected] = useState(null);
+  const [sourceLoading, setSourceLoading] = useState(false);
   const [region, setRegion] = useState('');
   const [product, setProduct] = useState('');
   const [selected, setSelected] = useState(null);
@@ -1229,11 +1260,31 @@ function Evidence({ runId, notify }) {
     if (product) params.set('product', product);
     if (runId) params.set('run_id', runId);
 
-    api(`/offers?${params}`)
-      .then(setRows)
-      .catch((error) => notify(error.message))
-      .finally(() => setLoading(false));
+    const offersRequest = api(`/offers?${params}`);
+    const sourcesRequest = runId ? api(`/evidence/${encodeURIComponent(runId)}?limit=200`) : Promise.resolve([]);
+    Promise.allSettled([offersRequest, sourcesRequest]).then(([offersResult, sourcesResult]) => {
+      if (offersResult.status === 'fulfilled') setRows(offersResult.value);
+      else notify(offersResult.reason.message);
+      if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value);
+      else setSources([]);
+    }).finally(() => setLoading(false));
   }, [region, product, runId]);
+
+  const openSource = async (source) => {
+    setSourceSelected(source);
+    setSourceText('');
+    setSourceLoading(true);
+    try {
+      const query = new URLSearchParams({ source_url: source.source_url, run_id: runId });
+      const data = await api(`/evidence/content?${query}`);
+      setSourceText(data.content || 'No captured page text was saved.');
+    } catch (error) {
+      notify(error.message);
+      setSourceText('The saved page content could not be loaded.');
+    } finally {
+      setSourceLoading(false);
+    }
+  };
 
   return (
     <>
@@ -1311,6 +1362,37 @@ function Evidence({ runId, notify }) {
           />
         )}
       </section>
+
+      {runId && (
+        <section className="panel captured-sources">
+          <div className="panel-head">
+            <div><h2>Source pages from this run</h2><p className="muted">The pages the crawler actually fetched, with saved text available to inspect.</p></div>
+            <Badge>{sources.length} sources</Badge>
+          </div>
+          {sources.length ? (
+            <ul className="captured-source-list">
+              {sources.map((source) => (
+                <li key={`${source.source_url}-${source.content_hash}`}>
+                  <div><strong>{short(source.source_url, 78)}</strong><small>{num(source.size)} chars · {source.scraped_at ? new Date(source.scraped_at).toLocaleString() : 'capture time unavailable'}</small></div>
+                  <a href={source.source_url} target="_blank" rel="noreferrer" aria-label="Open source website"><Icon name="external" size={14} /></a>
+                  <button className="btn-ghost" onClick={() => openSource(source)}>Inspect captured text</button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty title="No page text saved for this run" text="The run may have used older history or only produced structured offers. New runs retain their fetched page text here." />
+          )}
+        </section>
+      )}
+
+      {sourceSelected && (
+        <div className="scrim" onClick={() => { setSourceText(''); setSourceSelected(null); }} role="presentation">
+          <aside className="drawer source-drawer" onClick={(event) => event.stopPropagation()} aria-label="Captured source text">
+            <div className="drawer-head"><h2>Captured page text</h2><button className="btn-ghost" onClick={() => { setSourceText(''); setSourceSelected(null); }} aria-label="Close">×</button></div>
+            {sourceLoading ? <p className="muted">Loading captured source…</p> : <pre className="source-content">{sourceText}</pre>}
+          </aside>
+        </div>
+      )}
 
       {selected && (
         <div className="scrim" onClick={() => setSelected(null)} role="presentation">
@@ -1409,15 +1491,26 @@ const STARTERS = [
 function ResearchChat({ runId, notify }) {
   const [runs, setRuns] = useState([]);
   const [activeRun, setActiveRun] = useState(runId || '');
-  const [sessionId, setSessionId] = useState(() => localStorage.getItem('acr_chat_session') || '');
+  const [sessions, setSessions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('acr_chat_sessions') || '{}'); } catch { return {}; }
+  });
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const sessionId = activeRun ? sessions[activeRun] || '' : '';
 
   useEffect(() => {
-    api('/research/deep/runs')
-      .then(setRuns)
-      .catch(() => {});
+    api('/research/runs?limit=100')
+      .then((items) => {
+        const available = items.filter((item) => ['completed', 'partial'].includes(item.status));
+        setRuns(available);
+        setActiveRun((selected) => {
+          if (runId) return runId;
+          if (selected && available.some((item) => item.run_id === selected)) return selected;
+          return available[0]?.run_id || '';
+        });
+      })
+      .catch((error) => notify(`Saved research runs could not be loaded: ${error.message}`));
   }, []);
 
   useEffect(() => {
@@ -1440,7 +1533,7 @@ function ResearchChat({ runId, notify }) {
         ),
       )
       .catch(() => setMessages([]));
-  }, [sessionId]);
+  }, [sessionId, activeRun]);
 
   const send = async (event) => {
     event.preventDefault();
@@ -1461,8 +1554,11 @@ function ResearchChat({ runId, notify }) {
         }),
       });
       if (answer.session_id && answer.session_id !== sessionId) {
-        localStorage.setItem('acr_chat_session', answer.session_id);
-        setSessionId(answer.session_id);
+        setSessions((current) => {
+          const next = { ...current, [activeRun]: answer.session_id };
+          localStorage.setItem('acr_chat_sessions', JSON.stringify(next));
+          return next;
+        });
       }
       setMessages((current) => [
         ...current,
@@ -1481,8 +1577,12 @@ function ResearchChat({ runId, notify }) {
   };
 
   const startNew = () => {
-    localStorage.removeItem('acr_chat_session');
-    setSessionId('');
+    setSessions((current) => {
+      const next = { ...current };
+      delete next[activeRun];
+      localStorage.setItem('acr_chat_sessions', JSON.stringify(next));
+      return next;
+    });
     setMessages([]);
   };
 
@@ -1493,7 +1593,7 @@ function ResearchChat({ runId, notify }) {
       <Masthead
         eyebrow="Research chat"
         title="Interrogate the evidence"
-        lede="Answers are built only from sections the selected run captured. When the evidence does not cover a question, that is reported rather than guessed."
+        lede="Ask about a competitive run or deep research. Answers use only that run’s captured pages and offers, include source links, and call out missing evidence instead of guessing."
         actions={
           <button className="btn-ghost" onClick={startNew}>
             New chat
@@ -1507,22 +1607,22 @@ function ResearchChat({ runId, notify }) {
             <span>Scope</span>
             <select value={activeRun} onChange={(e) => setActiveRun(e.target.value)}>
               <option value="">Most recent run</option>
-              {runs.map((run) => (
-                <option key={run.run_id} value={run.run_id}>
-                  {run.run_id} · {pretty(run.status)}
+                {runs.map((run) => (
+                  <option key={`${run.kind}-${run.run_id}`} value={run.run_id}>
+                    {run.title} · {run.kind === 'deep' ? 'Deep' : 'Competitive'} · {pretty(run.status)}
                 </option>
               ))}
             </select>
           </label>
           {current ? (
             <dl className="facts">
-              <div><dt>Pages</dt><dd className="mono">{num(current.coverage?.pages_fetched)}</dd></div>
-              <div><dt>Sections</dt><dd className="mono">{num(current.coverage?.sections)}</dd></div>
-              <div><dt>Facts</dt><dd className="mono">{num(current.coverage?.facts)}</dd></div>
+              <div><dt>Research path</dt><dd className="mono">{current.kind === 'deep' ? 'Deep research' : 'Competitive run'}</dd></div>
+              <div><dt>Sources fetched</dt><dd className="mono">{num(current.kind === 'deep' ? current.coverage?.pages_fetched : current.metrics?.urls_succeeded)}</dd></div>
+              <div><dt>Offers / facts</dt><dd className="mono">{num(current.kind === 'deep' ? current.coverage?.facts : current.metrics?.products)}</dd></div>
             </dl>
           ) : (
             <p className="muted">
-              {runs.length ? 'Using the most recent run.' : 'Run deep research first to build a corpus.'}
+              {runs.length ? 'Select a saved run to scope answers to its evidence.' : 'Complete a competitive or deep research run to build an evidence corpus.'}
             </p>
           )}
         </aside>
@@ -1573,11 +1673,11 @@ function ResearchChat({ runId, notify }) {
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder={runs.length ? 'Ask a question about this run…' : 'Run deep research first…'}
-              disabled={busy}
+              placeholder={activeRun ? 'Ask a question about this run…' : 'Select a saved research run first…'}
+              disabled={busy || !activeRun}
               aria-label="Your question"
             />
-            <button className="btn-primary" type="submit" disabled={busy || !draft.trim()} aria-label="Send question">
+            <button className="btn-primary" type="submit" disabled={busy || !draft.trim() || !activeRun} aria-label="Send question">
               <Icon name="arrow" size={16} />
             </button>
           </form>

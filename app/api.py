@@ -127,10 +127,106 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
             _set_job(job_id, events=list(events), current_event=event)
         pipeline = Pipeline(store=_store, review_store=_reviews, progress_callback=on_progress)
         result = pipeline.run(target, run_id=job_id)
-        _set_job(job_id, status="completed", result=result.model_dump(mode="json"), events=events)
+        chat_ready = False
+        chat_error = None
+        try:
+            _index_competitive_run_for_chat(_deep_pipeline().documents, job_id, target)
+            chat_ready = True
+        except Exception as exc:
+            chat_error = str(exc)[:300]
+            logger.exception("could not index competitive run %s for grounded chat", job_id)
+        result_payload = result.model_dump(mode="json")
+        result_payload["offers_captured"] = _store.count(run_id=job_id)
+        _set_job(job_id, status="completed", result=result_payload, events=events,
+                 chat_ready=chat_ready, chat_error=chat_error)
     except Exception as exc:
         logger.exception("research job %s failed", job_id)
         _set_job(job_id, status="failed", error=str(exc), events=events)
+
+
+def _index_competitive_run_for_chat(documents, run_id: str, target: CompetitorTarget) -> None:
+    """Make competitive page text and structured offers retrievable by grounded chat."""
+    from urllib.parse import urlparse
+
+    from app.research.models import Fact, PageDocument, PageType, ResearchSection
+    from app.discovery import canonical_url
+
+    existing = documents.get_run(run_id)
+    if existing and (existing.get("coverage") or {}).get("competitive_indexed"):
+        return
+    if existing:
+        documents.delete_run(run_id)
+
+    title = f"{target.company} competitive research"
+    objective = f"Competitive research for {target.company}; answer using only pages and offers captured in this run."
+    documents.create_run(run_id, "compare", objective, str(target.website), title)
+
+    source_refs: dict[str, tuple[str, Optional[int]]] = {}
+    sections = []
+    facts = []
+    fetched_pages = 0
+    source_rows = _store.evidence_for_run(run_id, limit=200)
+    for source in source_rows:
+        url = source.get("source_url") or ""
+        content = _store.get_evidence(url, run_id=run_id) or ""
+        if not url or not content.strip():
+            continue
+        ref = f"S{len(source_refs) + 1}"
+        page_title = urlparse(url).netloc or url
+        document = PageDocument(
+            url=url, title=page_title, text=content, markdown=content,
+            status="fetched", page_type=PageType.product, source_ref=ref,
+            content_hash=source.get("content_hash") or "",
+        )
+        page_id = documents.save_page(run_id, document)
+        fetched_pages += 1
+        source_refs[canonical_url(url)] = (ref, page_id)
+        sections.append(ResearchSection(
+            run_id=run_id, page_id=page_id, source_ref=ref, url=url,
+            title=page_title, heading="Captured source page", content=content[:30000],
+            page_type=PageType.product,
+        ))
+
+    offers = _store.recent_offers(limit=1000, run_id=run_id)
+    for offer in offers:
+        url = offer.url
+        source_key = canonical_url(offer.canonical_url or offer.url)
+        if source_key not in source_refs:
+            ref, page_id = f"S{len(source_refs) + 1}", None
+            source_refs[source_key] = (ref, page_id)
+        ref, page_id = source_refs[source_key]
+        price = f"{offer.currency.value} {offer.price:,.2f}"
+        statement = (
+            f"{offer.product_name} is listed at {price} in {offer.region.value}; "
+            f"availability: {offer.availability.value}."
+        )
+        details = [statement]
+        if offer.competitor:
+            details.append(f"Competitor: {offer.competitor}.")
+        if offer.seller:
+            details.append(f"Seller: {offer.seller}.")
+        if offer.listing_title:
+            details.append(f"Listing: {offer.listing_title}.")
+        sections.append(ResearchSection(
+            run_id=run_id, page_id=page_id, source_ref=ref, url=url,
+            title=offer.product_name, heading="Captured structured offer",
+            content=" ".join(details), page_type=PageType.pricing,
+        ))
+        facts.append(Fact(
+            page_id=page_id, source_ref=ref, url=url, subject=offer.product_name,
+            question=f"What is the {offer.region.value} price and availability?",
+            statement=statement, value=price, confidence=offer.extraction_confidence or 0.65,
+            kind="price", quote=offer.listing_title or statement,
+        ))
+
+    documents.save_sections(run_id, sections)
+    documents.save_facts(run_id, facts)
+    documents.update_run(
+        run_id, status="completed",
+        coverage={"competitive_indexed": True, "pages_fetched": fetched_pages, "pages_failed": 0,
+                  "sections": len(sections), "facts": len(facts),
+                  "characters": sum(len(section.content) for section in sections)},
+    )
 
 
 _deep_pipeline_instance = None
@@ -304,7 +400,27 @@ def create_app():
     def research_chat(payload: ChatRequest):
         from app.research.chat import ResearchChat
 
-        chat = ResearchChat(_deep_pipeline().documents)
+        documents = _deep_pipeline().documents
+        stored_run = documents.get_run(payload.run_id) if payload.run_id else None
+        competitive_index_incomplete = bool(
+            stored_run
+            and stored_run.get("mode") == "compare"
+            and not (stored_run.get("coverage") or {}).get("competitive_indexed")
+        )
+        if payload.run_id and (not stored_run or competitive_index_incomplete):
+            job = _store.get_job(payload.run_id) or {}
+            metrics = next((item for item in _store.recent_runs(limit=100) if item.get("run_id") == payload.run_id), None)
+            if job or metrics:
+                target_data = job.get("target") or {
+                    "company": metrics.get("target_company", "Competitive research") if metrics else "Competitive research",
+                    "website": "https://source-unavailable.invalid",
+                }
+                try:
+                    target = CompetitorTarget.model_validate(target_data)
+                    _index_competitive_run_for_chat(documents, payload.run_id, target)
+                except Exception:
+                    logger.exception("could not prepare competitive run %s for chat", payload.run_id)
+        chat = ResearchChat(documents)
         answer = chat.ask(
             payload.question,
             run_id=payload.run_id,
@@ -415,7 +531,7 @@ def create_app():
         limit = max(1, min(limit, 100))
         unique = {}
         for job in _store.recent_jobs(limit=limit):
-            if job.get("status") in {"queued", "running", "failed", "interrupted"}:
+            if job.get("status") in {"queued", "running", "failed", "interrupted", "completed"}:
                 target = job.get("target") or {}
                 result = job.get("result") or {}
                 metrics = result.get("metrics") or {}
@@ -444,6 +560,8 @@ def create_app():
         try:
             for run in _deep_pipeline().documents.list_runs(limit=limit):
                 coverage = run.get("coverage") or {}
+                if coverage.get("competitive_indexed"):
+                    continue
                 deep_run = {
                     "run_id": run.get("run_id"), "kind": "deep", "status": run.get("status"),
                     "title": run.get("title") or run.get("question") or "Deep research",
