@@ -510,7 +510,7 @@ A horizontally scaled production deployment should move job state and scheduling
 ```
 API_KEY=your-long-random-string
 API_KEY_REQUIRED=true
-APINEX_API_KEY=sk-apx1fda57e76a7d9ba702e6b2aee30fe8e00f7c0e34bf0b8b0
+APINEX_API_KEY=your-apinex-key
 APINEX_BASE_URL=https://api.apinex.bond/v1
 CORS_ORIGINS=https://your-frontend-url.onrender.com
 GROQ_API_KEY=your-key-if-you-have
@@ -603,6 +603,12 @@ Frontend at `http://localhost:5173`.
 Current: `https://ai-competitor-research-web.onrender.com`
 
 Update `VITE_API_URL` to your Northflank URL, then **Manual Deploy → Clear build cache → Deploy**.
+Set `CORS_ORIGINS` on Northflank to the exact Render frontend origin (for example,
+`https://ai-competitor-research-web.onrender.com`). Keep `API_KEY_REQUIRED=true` and set
+`API_KEY` as a secret on Northflank. The browser prompts for this workspace key when a request
+requires it; never put it in `VITE_API_URL` or another `VITE_*` variable because those values are
+public in the built frontend. Set `DEEP_SEARCH_ENABLED=true` on the Northflank API service to enable
+topic and comparison discovery; `DEEP_LLM_ENABLED=true` controls model-assisted extraction.
 
 ---
 

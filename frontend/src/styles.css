@@ -282,6 +282,26 @@ textarea {
   color: var(--accent);
 }
 
+.rail-list button:active,
+.btn-primary:active,
+.segmented button:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.nav-scrim {
+  display: none;
+}
+
+.rail-list button:active,
+.btn-primary:active,
+.segmented button:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.nav-scrim {
+  display: none;
+}
+
 .rail-foot {
   display: flex;
   flex-direction: column;
@@ -1877,6 +1897,28 @@ select {
     box-shadow: var(--shadow-lg);
   }
 
+  .nav-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    border: 0;
+    background: rgba(4, 4, 6, 0.58);
+    backdrop-filter: blur(3px);
+    animation: scrim-in 0.18s ease-out;
+  }
+
+  .nav-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    border: 0;
+    background: rgba(4, 4, 6, 0.58);
+    backdrop-filter: blur(3px);
+    animation: scrim-in 0.18s ease-out;
+  }
+
   .topbar-menu {
     display: inline-flex;
   }
@@ -1900,6 +1942,16 @@ select {
   .bubble {
     max-width: 92%;
   }
+}
+
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @media (max-width: 640px) {

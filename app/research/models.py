@@ -61,6 +61,7 @@ class ResearchRequest(BaseModel):
     url: Optional[str] = None
     question: str = Field(default="", max_length=2000)
     company: Optional[str] = Field(default=None, max_length=200)
+    topic: Optional[str] = Field(default=None, max_length=200)
     competitors: List[str] = Field(default_factory=list, max_length=10)
     max_pages: Optional[int] = Field(default=None, ge=1, le=60)
     max_depth: Optional[int] = Field(default=None, ge=0, le=4)

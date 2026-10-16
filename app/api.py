@@ -49,6 +49,7 @@ class DeepResearchRequest(BaseModel):
     mode: str = Field(default="url", pattern=r"^(url|topic|compare)$")
     url: Optional[str] = None
     topic: Optional[str] = None
+    company: Optional[str] = Field(default=None, max_length=200)
     competitors: list[str] = Field(default_factory=list)
     question: str = Field(default="", max_length=1000)
     max_pages: int = Field(default=0, ge=0, le=60)
@@ -239,11 +240,16 @@ def create_app():
             raise HTTPException(status_code=422, detail="url is required for mode=url")
         if mode is ResearchMode.topic and not (payload.topic or payload.question):
             raise HTTPException(status_code=422, detail="topic is required for mode=topic")
+        if mode is ResearchMode.compare and not (payload.topic or payload.company):
+            raise HTTPException(status_code=422, detail="subject is required for mode=compare")
+        if mode is ResearchMode.compare and not payload.competitors:
+            raise HTTPException(status_code=422, detail="at least one competitor is required for mode=compare")
 
         request = ResearchRequest(
             mode=mode,
             url=payload.url,
             topic=payload.topic,
+            company=payload.company or payload.topic,
             competitors=[c for c in payload.competitors if c][:8],
             question=payload.question,
             max_pages=payload.max_pages or None,

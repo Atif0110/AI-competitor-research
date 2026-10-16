@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 const NAV = [
   ['dashboard', 'Overview', 'grid'],
@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = 75000;
 /* data access                                                         */
 /* ------------------------------------------------------------------ */
 async function api(path, options = {}) {
-  const key = localStorage.getItem(STORAGE_KEY) || '';
+  const key = sessionStorage.getItem(STORAGE_KEY) || '';
   const headers = {
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     ...(key ? { 'X-API-Key': key } : {}),
@@ -80,7 +80,7 @@ async function api(path, options = {}) {
 
     if (response.status === 401) {
       throw new Error(
-        'That workspace key was rejected. Open "Workspace key" in the sidebar and paste the API_KEY configured on the API service.',
+        'The workspace key is missing or incorrect. Set the API_KEY secret on the API service, then enter that value using “Set workspace key” in the sidebar.',
       );
     }
     if (response.status === 503) {
@@ -229,7 +229,7 @@ function App() {
       .then(setHealth)
       .catch((error) => {
         setHealth({ status: 'error' });
-        setToast(error.message);
+        console.warn('Research API health check failed:', error.message);
       });
 
   useEffect(() => {
@@ -255,12 +255,18 @@ function App() {
 
   const openKeyPrompt = () => {
     const entered = window.prompt(
-      'Paste the workspace API_KEY configured on the API service (Render → Environment). This is not your model provider key.',
+      'Enter the API_KEY configured on the API service. It is stored for this browser tab only.',
       localStorage.getItem(STORAGE_KEY) || '',
     );
     if (entered === null) return;
-    localStorage.setItem(STORAGE_KEY, entered.trim());
+    if (entered.trim()) sessionStorage.setItem(STORAGE_KEY, entered.trim());
+    else sessionStorage.removeItem(STORAGE_KEY);
     loadHealth();
+  };
+
+  const clearKey = () => {
+    sessionStorage.removeItem(STORAGE_KEY);
+    setToast('Workspace key cleared for this browser tab.');
   };
 
   const online = health?.status === 'ok';
@@ -308,10 +314,12 @@ function App() {
           </div>
           <button className="rail-key" onClick={openKeyPrompt}>
             <Icon name="key" size={15} />
-            Workspace key
+            {sessionStorage.getItem(STORAGE_KEY) ? 'Change workspace key' : 'Set workspace key'}
           </button>
+          {sessionStorage.getItem(STORAGE_KEY) && <button className="rail-key" onClick={clearKey}>Clear key</button>}
         </div>
       </nav>
+      {navOpen && <button className="nav-scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />}
 
       <main className="main" id="main">
         <header className="topbar">

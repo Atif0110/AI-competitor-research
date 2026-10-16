@@ -88,6 +88,11 @@ def _page_types(values) -> List[PageType]:
 def _subject_for(request: ResearchRequest, plan_seed: str = "") -> str:
     if request.company:
         return request.company
+    # The API accepts ``topic`` as an alias for the subject in topic and
+    # comparison mode. Preserve it when building deterministic plans too.
+    topic = request.topic
+    if topic:
+        return str(topic).strip()
     if request.url:
         host = urlparse(request.url).netloc.lower()
         return host[4:] if host.startswith("www.") else host
@@ -113,7 +118,7 @@ def build_plan(
             objective = f"Research everything relevant on {request.url}"
         elif request.competitors:
             objective = (
-                f"Compare {request.company or 'the target'} with "
+                f"Compare {request.company or getattr(request, 'topic', None) or 'the target'} with "
                 f"{', '.join(request.competitors[:4])}"
             )
         else:
@@ -142,6 +147,11 @@ def build_plan(
         plan.page_types = _COMMON_PAGE_TYPES
     if not plan.search_queries and request.mode == ResearchMode.topic:
         plan.search_queries = _deterministic_queries(plan.subject, objective, plan.keywords)
+    elif not plan.search_queries and request.mode == ResearchMode.compare:
+        plan.search_queries = _clean_list(
+            [f"{plan.subject} {competitor} comparison" for competitor in request.competitors[:5]],
+            6,
+        )
     return plan
 
 

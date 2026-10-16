@@ -139,9 +139,10 @@ class DeepResearchPipeline:
         try:
             seed_urls = list(plan.seed_urls)
             if request.mode == ResearchMode.compare:
-                for competitor in request.competitors[:5]:
-                    if competitor:
-                        seed_urls.append(f"https://{competitor.replace(' ', '').lower()}")
+                # Search provides verified competitor URLs; guessing a
+                # hostname from a display name creates noisy failures.
+                if search.available:
+                    seed_urls.extend(self._search_seeds(search, plan, limit=6))
 
             if request.use_search and search.available and (
                 request.mode != ResearchMode.url or not seed_urls
@@ -233,7 +234,7 @@ class DeepResearchPipeline:
                     [p for p in outcome.pages if p.status == "skipped"]
                 ),
                 external_sources=outcome.external_used,
-                search_queries=len(plan.search_queries),
+                search_queries=(len(plan.search_queries) if request.use_search and search.available else 0),
                 sections=len(result.sections),
                 facts=len(result.facts),
                 characters=total_chars,

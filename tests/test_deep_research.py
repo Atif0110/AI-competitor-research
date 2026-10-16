@@ -15,6 +15,7 @@ import pytest
 from app.config import settings
 from app.research.models import ResearchMode, ResearchRequest, ResearchStatus
 from app.research.pipeline import DeepResearchPipeline
+from app.research.planner import build_plan
 from app.storage.documents import DocumentStore
 
 PAGES = {
@@ -128,25 +129,62 @@ def test_deep_research_url_run_is_cited_and_retrievable(site, env):
     stored = pipeline.load(result.run_id)
     assert stored is not None
     assert stored.run_id == result.run_id
+
+
+def test_compare_plan_uses_subject_as_company(env):
+    from app.research.models import ResearchRequest
+
+    request = ResearchRequest(
+        mode=ResearchMode.compare,
+        topic="Notion",
+        competitors=["Coda", "Obsidian"],
+        use_llm=False,
+    )
+    plan = build_plan(request)
+
+    assert plan.subject == "Notion"
+    assert "Notion" in plan.objective
+    assert any("Notion" in query and "Coda" in query for query in plan.search_queries)
+
+
+def test_deep_research_url_run_is_cited_and_retrievable(site, env):
+    events = []
+    pipeline = DeepResearchPipeline(progress_callback=events.append)
+
+    result = pipeline.run(
+        ResearchRequest(
+            mode=ResearchMode.url,
+            url=site,
+            question="What does Acme charge for its plans and how many seats are included?",
+            max_pages=5,
+            max_depth=1,
+            use_search=False,
+            use_llm=False,
+        )
+    )
+
+    assert result.status in (ResearchStatus.completed, ResearchStatus.partial)
+    assert result.coverage.pages_fetched >= 2
+    assert result.sections and result.citations
+    assert all(c.ref.startswith("S") for c in result.citations)
+    assert "[S" in result.report_markdown and "Sources" in result.report_markdown
+    assert any("pricing" in page["url"] for page in result.pages)
+    assert result.facts and any("$49" in fact.statement or "19" in fact.statement for fact in result.facts)
+
+    stored = pipeline.load(result.run_id)
+    assert stored is not None and stored.run_id == result.run_id
     assert len(stored.sections) == len(result.sections)
     assert stored.report_markdown == result.report_markdown
 
-    # retrieval finds the pricing answer for a targeted question
     hits = pipeline.documents.search_sections(
         result.run_id, "how much does the enterprise plan cost per month", k=3
     )
     assert hits
     assert any("$49" in section.content or "49" in section.content for section, _ in hits)
-
-    # progress events tell the UI what is happening
     kinds = {e["event"] for e in events}
     assert {"run_started", "crawl_started", "page_processed", "run_completed"} <= kinds
-
-    # run history is queryable for the frontend
     runs = pipeline.documents.list_runs()
     assert any(r["run_id"] == result.run_id for r in runs)
-
-
 def test_deep_research_reports_gaps_when_evidence_is_missing(site, env):
     pipeline = DeepResearchPipeline()
     result = pipeline.run(

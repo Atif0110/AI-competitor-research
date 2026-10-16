@@ -22,6 +22,8 @@ services:
         value: auto
       - key: API_KEY_REQUIRED
         value: "true"
+      - key: API_KEY
+        sync: false
       # Free-first provider chain. Add APINEX_API_KEY for the free tier.
       - key: APINEX_BASE_URL
         value: https://apinex.bond/v1
@@ -59,4 +61,4 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_URL
-        sync: false
+        value: https://p01--ai-research-platform--tqfz8cfnnfsv.code.run

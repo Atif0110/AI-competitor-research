@@ -539,6 +539,7 @@ class Settings:
             "http://localhost:5173",
             "http://localhost:8080",
             "https://ai-competitor-research.onrender.com",
+            "https://ai-competitor-research-web.onrender.com",
         ]
     )
 
