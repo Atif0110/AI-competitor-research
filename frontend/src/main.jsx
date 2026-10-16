@@ -330,9 +330,16 @@ function App() {
           <div className="topbar-right">
             {health?.llm_provider_chain?.length ? (
               <span className="chain">
-                {health.llm_provider_chain.join(' → ')}
+                Route · {health.llm_provider_chain.join(' / ')}
               </span>
             ) : null}
+            <div
+              className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`}
+              aria-live="polite"
+            >
+              <span className="connection-dot" />
+              <span>{online ? 'API connected' : health?.status === 'error' ? 'API offline' : 'Connecting'}</span>
+            </div>
             <button className="btn-primary" onClick={() => setPage('deep')}>
               <Icon name="plus" size={15} />
               New research
@@ -347,9 +354,8 @@ function App() {
               <div>
                 <strong>The research API is not responding</strong>
                 <p>
-                  Every page below needs <span className="mono">{API}</span>. If the service is
-                  suspended or still deploying, resume it in the Render dashboard. Nothing on this
-                  page can load until it answers.
+                  The API at <span className="mono">{API}</span> did not respond. Check your
+                  Northflank service status and deployment logs, then retry.
                 </p>
               </div>
               <button className="btn-ghost" onClick={loadHealth}>
@@ -415,9 +421,9 @@ function Dashboard({ runId, onNavigate, health }) {
   return (
     <>
       <Masthead
-        eyebrow="Overview"
-        title="What the evidence says"
-        lede="Every number here is traceable to a captured page. Start a run when you have a new target, or interrogate an existing one in research chat."
+        eyebrow="Intelligence workspace"
+        title="Market intelligence at a glance"
+        lede="Research competitors, compare offers, and keep every finding connected to its source."
         actions={
           <>
             <button className="btn-primary" onClick={() => onNavigate('deep')}>
@@ -488,7 +494,7 @@ function Dashboard({ runId, onNavigate, health }) {
 
         <section className="panel">
           <div className="panel-head">
-            <h2>Two ways to research</h2>
+            <h2>Choose a research path</h2>
           </div>
           <ul className="choice-list">
             <li>
