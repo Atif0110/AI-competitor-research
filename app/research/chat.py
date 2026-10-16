@@ -76,7 +76,8 @@ class ResearchChat:
 
         if _is_offer_comparison_question(question):
             offer_answer = self._answer_from_captured_offers(question, run_id, session_id)
-            return offer_answer
+            if offer_answer is not None:
+                return offer_answer
 
         sections, citations = self._retrieve(run_id, question, top_k)
         if not sections:
@@ -107,7 +108,7 @@ class ResearchChat:
 
     def _answer_from_captured_offers(
         self, question: str, run_id: str, session_id: str
-    ) -> ChatAnswer:
+    ) -> Optional[ChatAnswer]:
         """Answer price questions from captured offer records, never page prose."""
         sections = [
             section for section in self.documents.sections_for_run(run_id)
@@ -136,7 +137,12 @@ class ResearchChat:
                 "ref": section.source_ref,
             })
 
+        comparison_requested = bool(re.search(r"\b(cheaper|cheapest|lowest|compare|comparison)\b", question, re.I))
         if not rows:
+            if not comparison_requested:
+                # Direct factual questions may still be answerable from cited page
+                # evidence; only comparisons require normalized offer records.
+                return None
             message = (
                 "This run has no validated structured offers to compare. "
                 "I can’t reliably infer competitor prices from general page text; "
@@ -160,7 +166,6 @@ class ResearchChat:
             )
 
         comparison = ""
-        comparison_requested = bool(re.search(r"\b(cheaper|cheapest|lowest|compare|comparison)\b", question, re.I))
         if comparison_requested:
             groups = defaultdict(list)
             for row in rows:

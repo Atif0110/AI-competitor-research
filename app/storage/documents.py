@@ -743,16 +743,22 @@ class DocumentStore:
 
     def list_sessions(self, run_id: Optional[str] = None, limit: int = 25) -> List[dict]:
         with self._connect() as conn:
+            fields = (
+                "SELECT cs.*, "
+                "(SELECT content FROM chat_messages cm WHERE cm.session_id = cs.id ORDER BY cm.id DESC LIMIT 1) AS last_message, "
+                "(SELECT COUNT(*) FROM chat_messages cm WHERE cm.session_id = cs.id) AS message_count "
+                "FROM chat_sessions cs "
+            )
             if run_id:
                 rows = self._execute(
                     conn,
-                    "SELECT * FROM chat_sessions WHERE run_id = ? ORDER BY updated_at DESC LIMIT ?",
+                    fields + "WHERE cs.run_id = ? ORDER BY cs.updated_at DESC LIMIT ?",
                     (run_id, limit),
                 ).fetchall()
             else:
                 rows = self._execute(
                     conn,
-                    "SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ?",
+                    fields + "ORDER BY cs.updated_at DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
         return [dict(r) for r in rows]

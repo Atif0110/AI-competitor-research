@@ -112,6 +112,37 @@ def test_evidence_is_retained_for_each_run_even_when_source_text_matches(tmp_pat
     assert store.get_evidence("https://acme.example/pricing", "run-two") == content
 
 
+def test_saved_chat_history_lists_and_reopens_the_same_conversation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    import app.api as api_module
+    from app.config import settings
+    from app.research.pipeline import DeepResearchPipeline  # initialize package exports before the document store
+    from app.storage.documents import DocumentStore
+
+    database_url = f"sqlite:///{tmp_path / 'saved-chat-history.db'}"
+    store = OfferStore(database_url=database_url)
+    documents = DocumentStore(database_url=database_url)
+    documents.create_session("saved-chat-123", "research-run-123", title="Which plan costs less?")
+    documents.add_message("saved-chat-123", "user", "Which plan costs less?")
+    documents.add_message("saved-chat-123", "assistant", "Captured evidence does not compare these plans.")
+    monkeypatch.setattr(api_module, "_store", store)
+    monkeypatch.setattr(api_module, "_deep_pipeline", lambda: SimpleNamespace(documents=documents))
+    monkeypatch.setattr(settings, "api_key_required", False)
+    client = TestClient(api_module.app)
+
+    listed = client.get("/research/chats?limit=10")
+    assert listed.status_code == 200
+    assert listed.json()[0]["session_id"] == "saved-chat-123"
+    assert listed.json()[0]["message_count"] == 2
+    assert "compare" in listed.json()[0]["last_message"]
+
+    reopened = client.get("/research/chat/saved-chat-123")
+    assert reopened.status_code == 200
+    assert reopened.json()["run_id"] == "research-run-123"
+    assert len(reopened.json()["messages"]) == 2
+
+
 def test_competitive_run_chat_is_scoped_and_cited(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from fastapi.testclient import TestClient

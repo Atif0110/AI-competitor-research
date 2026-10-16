@@ -2283,6 +2283,42 @@ select {
 
 ::selection { background: rgba(185, 230, 111, 0.75); color: #11160c; }
 
+.history-head-actions { display: flex; align-items: center; gap: 8px; }
+.history-archive { padding: 0; overflow: hidden; }
+.archive-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.archive-tabs { display: flex; align-items: center; gap: 5px; }
+.archive-tabs button { display: inline-flex; align-items: center; gap: 9px; padding: 10px 13px; border: 1px solid transparent; border-radius: 9px; color: var(--text-3); background: transparent; cursor: pointer; transition: color 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease); }
+.archive-tabs button:hover { color: var(--text); background: rgba(255,255,255,.035); }
+.archive-tabs button.is-active { color: var(--text); border-color: var(--line); background: var(--surface-2); }
+.archive-tabs button span { min-width: 22px; padding: 2px 6px; border-radius: 20px; background: rgba(255,255,255,.06); color: var(--text-3); font: 11px var(--mono); text-align: center; }
+.archive-search { display: flex; align-items: center; gap: 9px; width: min(310px, 100%); padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-3); background: var(--surface-1); }
+.archive-search input { width: 100%; min-width: 0; padding: 10px 0; border: 0; outline: 0; color: var(--text); background: transparent; font: inherit; }
+.archive-list { display: grid; }
+.archive-row { display: grid; grid-template-columns: 38px minmax(0,1fr) minmax(150px, .55fr) auto 18px; gap: 15px; align-items: center; width: 100%; padding: 17px 20px; border: 0; border-bottom: 1px solid var(--line); color: var(--text); text-align: left; background: transparent; cursor: pointer; transition: background 160ms var(--ease), transform 160ms var(--ease); }
+.archive-row:last-child { border-bottom: 0; }
+.archive-row:hover { background: rgba(255,255,255,.035); transform: translateX(2px); }
+.archive-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid rgba(185,230,111,.16); border-radius: 10px; color: var(--accent); background: rgba(185,230,111,.06); }
+.archive-icon-deep { color: #9db7ff; border-color: rgba(157,183,255,.18); background: rgba(157,183,255,.06); }
+.archive-icon-chat { color: #70d5ae; border-color: rgba(112,213,174,.18); background: rgba(112,213,174,.06); }
+.archive-row-main, .archive-row-detail { display: grid; gap: 5px; min-width: 0; }
+.archive-row-main > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.archive-row-main > small, .archive-row-detail > small, .archive-row-detail strong small { color: var(--text-3); font-size: 11px; font-weight: 400; }
+.archive-row-detail > strong { font: 12px var(--mono); }
+.archive-preview { overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.archive-continue { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 12px; }
+.archive-loading { display: flex; align-items: center; gap: 12px; min-height: 190px; padding: 24px; color: var(--text-3); }
+.archive-pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 rgba(185,230,111,.35); animation: archive-pulse 1.7s infinite; }
+@keyframes archive-pulse { 70% { box-shadow: 0 0 0 9px rgba(185,230,111,0); } 100% { box-shadow: 0 0 0 0 rgba(185,230,111,0); } }
+
 @media (prefers-reduced-motion: reduce) {
-  .content > * { animation: none; }
+  .content > *, .archive-pulse { animation: none; }
+}
+
+@media (max-width: 760px) {
+  .archive-toolbar { align-items: stretch; flex-direction: column; }
+  .archive-search { width: auto; }
+  .archive-row { grid-template-columns: 34px minmax(0,1fr) auto; gap: 10px; padding: 14px; }
+  .archive-row-detail { grid-column: 2; grid-row: 2; }
+  .archive-row > .badge, .archive-continue { grid-column: 3; grid-row: 1; }
+  .archive-row > svg:last-child { display: none; }
 }

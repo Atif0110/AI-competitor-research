@@ -5,7 +5,7 @@ import './styles.css';
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 const NAV_GROUPS = [
-  { label: 'Workspace', items: [['dashboard', 'Overview', 'grid']] },
+  { label: 'Workspace', items: [['dashboard', 'Overview', 'grid'], ['history', 'History', 'layers']] },
   { label: 'Research', items: [['run', 'Competitive run', 'target'], ['deep', 'Deep research', 'compass']] },
   {
     label: 'Intelligence',
@@ -222,8 +222,9 @@ function App() {
   const [page, setPage] = useState('dashboard');
   const [health, setHealth] = useState(null);
   const [toast, setToast] = useState('');
-  const [runId, setRunId] = useState(() => sessionStorage.getItem('acr_last_run_id'));
+  const [runId, setRunId] = useState(null);
   const [chatRunId, setChatRunId] = useState(null);
+  const [chatSessionId, setChatSessionId] = useState(null);
   const [deepRun, setDeepRun] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -249,7 +250,6 @@ function App() {
     try {
       const result = await api('/research/jobs', { method: 'POST', body: JSON.stringify(target) });
       setRunId(result.job_id);
-      sessionStorage.setItem('acr_last_run_id', result.job_id);
       setPage('run');
       setNavOpen(false);
     } catch (error) {
@@ -285,17 +285,22 @@ function App() {
       return;
     }
     setRunId(run.run_id);
-    sessionStorage.setItem('acr_last_run_id', run.run_id);
     setPage('run');
   };
 
   const askAboutRun = (id) => {
     setChatRunId(id);
+    setChatSessionId(null);
+    setPage('chat');
+  };
+
+  const openSavedChat = (chat) => {
+    setChatRunId(chat.run_id || null);
+    setChatSessionId(chat.session_id);
     setPage('chat');
   };
 
   const clearCurrentRun = () => {
-    sessionStorage.removeItem('acr_last_run_id');
     setRunId(null);
   };
 
@@ -402,6 +407,7 @@ function App() {
           )}
 
           {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} onOpenRun={openSavedRun} health={health} />}
+          {page === 'history' && <ResearchHistory onOpenRun={openSavedRun} onOpenChat={openSavedChat} notify={setToast} />}
           {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onClearRun={clearCurrentRun} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} />}
           {page === 'deep' && (
             <DeepResearch
@@ -413,7 +419,7 @@ function App() {
           )}
           {page === 'evidence' && <Evidence runId={runId} notify={setToast} />}
           {page === 'signals' && <Signals runId={runId} />}
-          {page === 'chat' && <ResearchChat runId={chatRunId || deepRun?.run_id || null} notify={setToast} />}
+          {page === 'chat' && <ResearchChat runId={chatRunId || deepRun?.run_id || null} sessionId={chatSessionId} notify={setToast} />}
           {page === 'reports' && <Reports />}
         </div>
       </main>
@@ -499,8 +505,8 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
             <button className="desk-secondary" onClick={() => onNavigate('deep')}>
               Explore a question <Icon name="arrow" size={14} />
             </button>
-            <button className="desk-secondary" onClick={() => document.getElementById('run-history')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
-              Previous runs <span className="mono">{num(history.length)}</span>
+            <button className="desk-secondary" onClick={() => onNavigate('history')}>
+              History <span className="mono">{num(history.length)}</span>
             </button>
           </div>
         </div>
@@ -639,10 +645,13 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
 
       <section className="panel run-history" id="run-history">
         <div className="panel-head">
-          <div><h2>Research history</h2><p className="muted">Saved runs with source quality and compute usage.</p></div>
-          <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}>
-            <Icon name="refresh" size={14} /> Refresh
-          </button>
+          <div><h2>Recent runs</h2><p className="muted">Saved research with source quality and compute usage.</p></div>
+          <div className="history-head-actions">
+            <button className="btn-ghost" onClick={() => onNavigate('history')}>All history <Icon name="arrow" size={14} /></button>
+            <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading} aria-label="Refresh recent runs">
+              <Icon name="refresh" size={14} />
+            </button>
+          </div>
         </div>
         {historyError ? (
           <Empty title="Saved history could not be loaded" text={historyError} action="Retry history" onAction={() => setRefreshKey((key) => key + 1)} />
@@ -668,6 +677,98 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
         ) : (
           <Empty title="No saved runs yet" text="Completed and in-progress runs will appear here with source outcomes and usage." />
         )}
+      </section>
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* durable run and conversation archive                                */
+/* ------------------------------------------------------------------ */
+function ResearchHistory({ onOpenRun, onOpenChat, notify }) {
+  const [tab, setTab] = useState('runs');
+  const [runs, setRuns] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    setError('');
+    Promise.allSettled([
+      api('/research/runs?limit=500'),
+      api('/research/chats?limit=500'),
+    ]).then(([runResult, chatResult]) => {
+      if (!live) return;
+      if (runResult.status === 'fulfilled') setRuns(runResult.value || []);
+      if (chatResult.status === 'fulfilled') setChats(chatResult.value || []);
+      if (runResult.status === 'rejected' && chatResult.status === 'rejected') {
+        setError(`History could not be loaded: ${runResult.reason?.message || chatResult.reason?.message || 'API unavailable'}`);
+      } else if (runResult.status === 'rejected' || chatResult.status === 'rejected') {
+        notify(`Some history could not be loaded: ${runResult.status === 'rejected' ? runResult.reason?.message : chatResult.reason?.message}`);
+      }
+    }).finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [refreshKey]);
+
+  const matchingRuns = runs.filter((run) => `${run.title} ${run.kind} ${run.status}`.toLowerCase().includes(query.toLowerCase()));
+  const matchingChats = chats.filter((chat) => `${chat.title} ${chat.last_message} ${chat.run_id}`.toLowerCase().includes(query.toLowerCase()));
+  const runById = new Map(runs.map((run) => [run.run_id, run]));
+
+  return (
+    <>
+      <Masthead
+        eyebrow="Workspace archive"
+        title="Your research, kept together"
+        lede="Every saved run and conversation in one place. Reopen a run to inspect its evidence, or return to a chat and carry on where you left off."
+        actions={<button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}><Icon name="refresh" size={14} /> Refresh archive</button>}
+      />
+      <section className="history-archive panel">
+        <div className="archive-toolbar">
+          <div className="archive-tabs" role="tablist" aria-label="History type">
+            <button role="tab" aria-selected={tab === 'runs'} className={tab === 'runs' ? 'is-active' : ''} onClick={() => setTab('runs')}>Research runs <span>{num(runs.length)}</span></button>
+            <button role="tab" aria-selected={tab === 'chats'} className={tab === 'chats' ? 'is-active' : ''} onClick={() => setTab('chats')}>Conversations <span>{num(chats.length)}</span></button>
+          </div>
+          <label className="archive-search"><Icon name="search" size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === 'runs' ? 'Find a company or run…' : 'Find a conversation…'} aria-label="Search history" /></label>
+        </div>
+        {error ? <Empty title="History is temporarily unavailable" text={error} action="Try again" onAction={() => setRefreshKey((key) => key + 1)} /> : loading ? (
+          <div className="archive-loading"><span className="archive-pulse" /> Loading your saved research…</div>
+        ) : tab === 'runs' ? (
+          matchingRuns.length ? (
+            <div className="archive-list">
+              {matchingRuns.map((run) => {
+                const metrics = run.kind === 'deep' ? run.coverage : run.metrics;
+                const sourceCount = run.kind === 'deep' ? metrics?.pages_fetched : metrics?.urls_succeeded;
+                return (
+                  <button className="archive-row" key={`${run.kind}-${run.run_id}`} onClick={() => onOpenRun(run)}>
+                    <span className={`archive-icon ${run.kind === 'deep' ? 'archive-icon-deep' : ''}`}><Icon name={run.kind === 'deep' ? 'compass' : 'target'} size={17} /></span>
+                    <span className="archive-row-main"><strong>{run.title}</strong><small>{run.kind === 'deep' ? 'Deep research' : 'Competitive research'} · {run.created_at ? new Date(run.created_at).toLocaleString() : 'Date unavailable'} · {short(run.run_id, 18)}</small></span>
+                    <span className="archive-row-detail"><strong>{num(sourceCount)} <small>sources fetched</small></strong><small>{num(metrics?.llm_calls)} LLM calls · {metrics?.estimated_tokens ? `~${num(metrics.estimated_tokens)} tokens` : 'token usage unavailable'}</small></span>
+                    <Badge tone={run.status === 'completed' ? 'good' : ['failed', 'interrupted'].includes(run.status) ? 'bad' : 'busy'}>{pretty(run.status)}</Badge>
+                    <Icon name="arrow" size={15} />
+                  </button>
+                );
+              })}
+            </div>
+          ) : <Empty title={query ? 'No matching runs' : 'No saved runs yet'} text={query ? 'Try a different company or search term.' : 'Completed and in-progress research will appear here automatically.'} />
+        ) : matchingChats.length ? (
+          <div className="archive-list">
+            {matchingChats.map((chat) => {
+              const relatedRun = runById.get(chat.run_id);
+              return (
+                <button className="archive-row archive-chat-row" key={chat.session_id} onClick={() => onOpenChat(chat)}>
+                  <span className="archive-icon archive-icon-chat"><Icon name="chat" size={17} /></span>
+                  <span className="archive-row-main"><strong>{chat.title || 'Research conversation'}</strong><small>{relatedRun?.title || 'Saved research run'} · {chat.updated_at ? `Updated ${new Date(chat.updated_at).toLocaleString()}` : 'Date unavailable'}</small><span className="archive-preview">{short(chat.last_message, 140)}</span></span>
+                  <span className="archive-row-detail"><strong>{num(Math.floor((chat.message_count || 0) / 2))} <small>questions</small></strong><small>Conversation saved</small></span>
+                  <span className="archive-continue">Continue <Icon name="arrow" size={14} /></span>
+                </button>
+              );
+            })}
+          </div>
+        ) : <Empty title={query ? 'No matching conversations' : 'No saved conversations yet'} text={query ? 'Try another title or phrase.' : 'Ask a question from any completed run. Your conversation will be saved here and can be continued later.'} />}
       </section>
     </>
   );
@@ -790,7 +891,6 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk }) {
           if (/job not found/i.test(error.message)) {
             const message = 'This run is no longer available on the API. It may have been created before durable history was configured or lost when the service restarted. Start a new run to continue.';
             setLoadError(message);
-            sessionStorage.removeItem('acr_last_run_id');
           } else setLoadError(error.message);
         }
       });
@@ -811,7 +911,6 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk }) {
         .catch((error) => {
           if (/job not found/i.test(error.message)) {
             setJob(null);
-            sessionStorage.removeItem('acr_last_run_id');
             setLoadError('The API no longer has this run. It may have restarted without persistent history, or this browser is showing a stale run. Start a new run; it will stop polling this missing job.');
           } else setLoadError(error.message);
         });
@@ -1521,16 +1620,14 @@ const STARTERS = [
   'What did customers complain about?',
 ];
 
-function ResearchChat({ runId, notify }) {
+function ResearchChat({ runId, sessionId: savedSessionId, notify }) {
   const [runs, setRuns] = useState([]);
   const [activeRun, setActiveRun] = useState(runId || '');
-  const [sessions, setSessions] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('acr_chat_sessions') || '{}'); } catch { return {}; }
-  });
+  const [activeSessionId, setActiveSessionId] = useState(savedSessionId || '');
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const sessionId = activeRun ? sessions[activeRun] || '' : '';
+  const sessionId = activeSessionId;
 
   useEffect(() => {
     api('/research/runs?limit=100')
@@ -1549,6 +1646,14 @@ function ResearchChat({ runId, notify }) {
   useEffect(() => {
     if (runId) setActiveRun(runId);
   }, [runId]);
+
+  useEffect(() => {
+    setActiveSessionId(savedSessionId || '');
+  }, [savedSessionId]);
+
+  useEffect(() => {
+    if (runId && !savedSessionId) setActiveSessionId('');
+  }, [runId, savedSessionId]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1586,13 +1691,7 @@ function ResearchChat({ runId, notify }) {
           session_id: sessionId || null,
         }),
       });
-      if (answer.session_id && answer.session_id !== sessionId) {
-        setSessions((current) => {
-          const next = { ...current, [activeRun]: answer.session_id };
-          localStorage.setItem('acr_chat_sessions', JSON.stringify(next));
-          return next;
-        });
-      }
+      if (answer.session_id) setActiveSessionId(answer.session_id);
       setMessages((current) => [
         ...current,
         {
@@ -1610,12 +1709,7 @@ function ResearchChat({ runId, notify }) {
   };
 
   const startNew = () => {
-    setSessions((current) => {
-      const next = { ...current };
-      delete next[activeRun];
-      localStorage.setItem('acr_chat_sessions', JSON.stringify(next));
-      return next;
-    });
+    setActiveSessionId('');
     setMessages([]);
   };
 
@@ -1638,7 +1732,7 @@ function ResearchChat({ runId, notify }) {
         <aside className="chat-scope">
           <label className="field">
             <span>Scope</span>
-            <select value={activeRun} onChange={(e) => setActiveRun(e.target.value)}>
+            <select value={activeRun} onChange={(e) => { setActiveRun(e.target.value); setActiveSessionId(''); }}>
               <option value="">Most recent run</option>
                 {runs.map((run) => (
                   <option key={`${run.kind}-${run.run_id}`} value={run.run_id}>

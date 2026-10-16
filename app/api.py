@@ -397,7 +397,7 @@ def create_app():
 
     @app.get("/research/deep/runs")
     def deep_research_runs(limit: int = 25):
-        limit = max(1, min(limit, 200))
+        limit = max(1, min(limit, 500))
         return _deep_pipeline().documents.list_runs(limit=limit)
 
     @app.get("/research/deep/runs/{run_id}")
@@ -443,6 +443,21 @@ def create_app():
             top_k=payload.top_k,
         )
         return json.loads(answer.model_dump_json())
+
+    @app.get("/research/chats")
+    def research_chats(limit: int = 100):
+        """List saved conversations so a user can reopen and continue them."""
+        documents = _deep_pipeline().documents
+        sessions = documents.list_sessions(limit=max(1, min(limit, 500)))
+        return [{
+            "session_id": session["id"],
+            "run_id": session.get("run_id"),
+            "title": session.get("title") or "Research chat",
+            "created_at": session.get("created_at"),
+            "updated_at": session.get("updated_at"),
+            "last_message": session.get("last_message") or "",
+            "message_count": session.get("message_count") or 0,
+        } for session in sessions]
 
     @app.get("/research/chat/{session_id}")
     def research_chat_history(session_id: str, limit: int = 100):
@@ -543,7 +558,7 @@ def create_app():
     @app.get("/research/runs")
     def research_runs(limit: int = 25):
         """Compact, durable history across the two existing research paths."""
-        limit = max(1, min(limit, 100))
+        limit = max(1, min(limit, 500))
         unique = {}
         for job in _store.recent_jobs(limit=limit):
             if job.get("status") in {"queued", "running", "failed", "interrupted", "completed"}:
