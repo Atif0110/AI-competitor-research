@@ -172,9 +172,9 @@ The extraction process evaluates fields such as:
 - evidence
 - confidence
 
-The system validates both the schema and semantic requirements before accepting an observation.
+The system validates both the schema and semantic requirements before accepting an observation. Explicitly free plans are stored at zero price; a free trial alone is not treated as a free plan.
 
-Informational pages, documentation, support pages, careers pages, blogs, legal pages, and other non-commercial content can be rejected instead of being incorrectly treated as commercial product offers.
+Informational pages, documentation, support pages, careers pages, blogs, legal pages, and other pages without a priced offer are reported as **skipped**, separately from genuine extraction/provider errors. SaaS pricing/plans pages are prioritized and remain in scope when a focus category is entered.
 
 ### Corrective Extraction
 
@@ -183,6 +183,8 @@ Structured extraction failures can be fed back into a subsequent extraction atte
 The previous extraction error can be included in the next prompt so the model has additional context about what failed.
 
 Provider quota/rate-limit and provider-unavailable errors are handled separately so the system does not unnecessarily repeat requests when an external provider is already refusing requests.
+
+Competitive runs use a bounded work budget by default: up to three discovered pages per company, three concurrent scrapes (with the configured per-domain delay), serial LLM calls, a 12,000-character extraction excerpt that prioritizes price evidence, and one corrective retry at most. Review extraction is skipped unless the page contains clear review evidence. Tune these defaults with `COMPETITIVE_PAGES_PER_ENTITY`, `COMPETITIVE_SCRAPE_CONCURRENCY`, `EXTRACTION_MAX_CONTENT_CHARS`, and `EXTRACTION_MAX_ATTEMPTS`.
 
 ### Idempotent Observations
 

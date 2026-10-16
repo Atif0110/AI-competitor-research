@@ -20,6 +20,7 @@ class ExtractionResult:
     error: str | None = None
     attempts: int = 0
     region_mismatch: bool = False
+    skipped: bool = False
 
 
 class StructuredExtractor:
@@ -74,7 +75,7 @@ Rules:
    {"skip": true}
 7. Do not convert an integration, feature, plan description,
    article, or informational page into a product listing.
-8. The price must be a real price explicitly supported by the page.
+8. The price must be explicitly supported by the page. Use 0 only for an explicitly free plan/tier, never for a free trial.
 9. Return JSON only.
 10. Do not use markdown fences.
 """.strip()
@@ -163,8 +164,9 @@ Rules:
                 ok=False,
                 offer=None,
                 confidence=0.0,
-                error="URL path indicates a non-commercial page",
+                error="Page type is not a product or pricing offer",
                 attempts=0,
+                skipped=True,
             )
 
         expected_region_value = self._region_value(
@@ -213,8 +215,9 @@ Rules:
                         ok=False,
                         offer=None,
                         confidence=0.0,
-                        error="Model classified page as non-commercial",
+                        error="No priced product offer was found on this page",
                         attempts=attempts,
+                        skipped=True,
                     )
 
                 offer = self._build_offer(
@@ -242,6 +245,11 @@ Rules:
                 if expected_region_value is not None:
                     offer.region = Region(
                         expected_region_value
+                    )
+
+                if offer.price == 0 and not self._price_is_evidenced(content, offer):
+                    raise ValueError(
+                        "Zero price was returned without explicit free-plan evidence"
                     )
 
                 confidence = self._confidence(
@@ -313,6 +321,15 @@ Rules:
     ) -> str:
         region_text = expected_region or "Unknown"
 
+        content_budget = max(
+            2000,
+            min(int(settings.extraction_max_content_chars), 60000),
+        )
+        compact_content = StructuredExtractor._compact_content(
+            content,
+            content_budget,
+        )
+
         return f"""
 Extract one commercial product offer from this webpage.
 
@@ -322,8 +339,8 @@ SOURCE URL:
 EXPECTED REGION:
 {region_text}
 
-PAGE CONTENT:
-{content}
+PAGE CONTENT (relevant excerpt):
+{compact_content}
 
 Return JSON only.
 
@@ -332,6 +349,54 @@ If this is not a commercial product/offer page, return:
 
 Never invent a price or other product information.
 """.strip()
+
+    @staticmethod
+    def _compact_content(content: str, max_chars: int) -> str:
+        """Keep headings and commercial evidence while bounding prompt size."""
+        if len(content) <= max_chars:
+            return content
+
+        lines = content.splitlines()
+        price_evidence = re.compile(
+            r"\$|£|€|₹|¥|\b(?:USD|EUR|GBP|INR|JPY|CAD|AUD|SGD|BRL)\b|"
+            r"\b\d+(?:\.\d+)?\s*(?:/\s*(?:month|year)|per\s+(?:month|year))",
+            re.IGNORECASE,
+        )
+        pricing_context = re.compile(
+            r"\b(?:pricing|price|plans?|monthly|annual|free trial|starting at)\b",
+            re.IGNORECASE,
+        )
+        primary: set[int] = set()
+        for index, line in enumerate(lines):
+            if price_evidence.search(line):
+                primary.update(range(max(0, index - 1), min(len(lines), index + 2)))
+        for index, line in enumerate(lines):
+            if pricing_context.search(line):
+                primary.update(range(index, min(len(lines), index + 2)))
+
+        excerpt: list[str] = []
+        size = 0
+        ordered_indices = list(sorted(primary))
+        ordered_indices.extend(index for index in range(min(16, len(lines))) if index not in primary)
+        # Add a small amount of structure after the highest-value evidence.
+        ordered_indices.extend(
+            index for index, line in enumerate(lines)
+            if index not in primary and line.lstrip().startswith("#")
+        )
+        selected: set[int] = set()
+        for index in ordered_indices:
+            line = lines[index].strip()
+            if not line:
+                continue
+            if size + len(line) + 1 > max_chars:
+                continue
+            selected.add(index)
+            excerpt.append(line)
+            size += len(line) + 1
+
+        if not excerpt:
+            return content[:max_chars]
+        return "\n".join(lines[index].strip() for index in sorted(selected))
 
     # ------------------------------------------------------------------
     # JSON PARSING
@@ -420,10 +485,23 @@ Never invent a price or other product information.
         Check whether pricing is reasonably supported by the source.
         """
 
-        if offer.price <= 0:
+        if offer.price < 0:
             return False
 
         text = content.lower()
+
+        if offer.price == 0:
+            # A zero price is valid only for a clearly free plan/tier. A free
+            # trial is a time-limited promotion, not a zero-priced plan.
+            return bool(
+                re.search(
+                    r"\b(?:free\s+(?:plan|tier|version|forever)|forever\s+free|"
+                    r"no\s+cost|at\s+no\s+charge)\b|"
+                    r"(?:\$|€|£|₹|¥)\s*0(?:\.00)?\b",
+                    text,
+                    re.IGNORECASE,
+                )
+            )
 
         currency_tokens = {
             "USD": ["$", "usd"],
@@ -532,7 +610,8 @@ Never invent a price or other product information.
         )
 
         checks.append(
-            any(
+            offer.price == 0
+            or any(
                 token.lower() in text
                 for token in supported_currency_tokens
             )
@@ -619,7 +698,7 @@ Never invent a price or other product information.
         # --------------------------------------------------------------
 
         checks.append(
-            0.5 <= offer.price <= 500_000
+            offer.price == 0 or 0.5 <= offer.price <= 500_000
         )
 
         confidence = (
@@ -660,6 +739,12 @@ Never invent a price or other product information.
         """
 
         if not content or not content.strip():
+            return [], False
+
+        # A review-model call on every pricing/product page is usually wasted.
+        # Only run it where the page contains review evidence; keep demo mode's
+        # deterministic fixture behavior intact.
+        if getattr(self.client, "provider_name", "demo") != "demo" and not self._has_review_evidence(content, url):
             return [], False
 
         region_value = (
@@ -774,6 +859,20 @@ Never invent review information.
             reviews.append(review)
 
         return reviews, False
+
+    @staticmethod
+    def _has_review_evidence(content: str, url: str) -> bool:
+        if re.search(r"/(?:reviews?|testimonials?)(?:/|$)", url, re.IGNORECASE):
+            return True
+        return bool(
+            re.search(
+                r"(?:\b\d(?:\.\d)?\s*(?:/\s*5|out of 5|stars?)\b|"
+                r"verified (?:customer|buyer)|what customers say|"
+                r"customer testimonials|\u2605{2,}|\u2b50{2,})",
+                content,
+                re.IGNORECASE,
+            )
+        )
 
     # ------------------------------------------------------------------
     # BACKWARD-COMPATIBLE SINGLE REVIEW API

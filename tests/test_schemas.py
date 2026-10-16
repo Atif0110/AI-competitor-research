@@ -13,9 +13,9 @@ def test_valid_offer():
     assert offer.price == 499.0
 
 
-def test_zero_price_rejected():
-    with pytest.raises(ValidationError):
-        ProductOffer(product_name="X", price=0, currency="USD", region="US", url="u")
+def test_zero_price_is_valid_for_explicitly_free_offers():
+    offer = ProductOffer(product_name="Free plan", price=0, currency="USD", region="US", url="u")
+    assert offer.price == 0
 
 
 def test_negative_price_rejected():

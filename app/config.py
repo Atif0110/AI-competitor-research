@@ -326,7 +326,25 @@ class Settings:
 
     extraction_max_attempts: int = field(
         default_factory=lambda: int(
-            os.getenv("EXTRACTION_MAX_ATTEMPTS", "3")
+            os.getenv("EXTRACTION_MAX_ATTEMPTS", "2")
+        )
+    )
+
+    extraction_max_content_chars: int = field(
+        default_factory=lambda: int(
+            os.getenv("EXTRACTION_MAX_CONTENT_CHARS", "12000")
+        )
+    )
+
+    competitive_pages_per_entity: int = field(
+        default_factory=lambda: int(
+            os.getenv("COMPETITIVE_PAGES_PER_ENTITY", "3")
+        )
+    )
+
+    competitive_scrape_concurrency: int = field(
+        default_factory=lambda: int(
+            os.getenv("COMPETITIVE_SCRAPE_CONCURRENCY", "3")
         )
     )
 

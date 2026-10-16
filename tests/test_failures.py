@@ -114,6 +114,81 @@ def test_focus_products_filter(tmp_path, monkeypatch):
     assert result.pages_scraped == 3   # 1 URL x 3 regions (real fan-out)
 
 
+def test_competitive_run_keeps_pricing_and_reports_non_offer_as_skip(tmp_path, monkeypatch):
+    import json
+    import app.orchestrator as orchestration
+    from app.scrapers.base import ScrapeLog
+    from app.llm.extractor import StructuredExtractor
+
+    monkeypatch.setattr(settings, "database_url", "sqlite:///" + str(tmp_path / "saas.db"))
+    monkeypatch.setattr(settings, "vector_store_dir", str(tmp_path / "vectors"))
+    monkeypatch.setattr(settings, "checkpoint_dir", str(tmp_path / "checkpoints"))
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    monkeypatch.setattr(settings, "rate_limit_min_interval", 0)
+    urls = [
+        "https://coda.io/product/docs-and-team-hubs",
+        "https://coda.io/pricing",
+    ]
+    monkeypatch.setattr(orchestration, "discover_urls_for_entity", lambda website: urls)
+
+    class Client:
+        provider_name = "test"
+
+        def __init__(self):
+            self.calls = 0
+
+        def reset_telemetry(self):
+            self.calls = 0
+
+        def complete(self, system, user):
+            self.calls += 1
+            if "free forever" not in user:
+                return '{"skip": true}'
+            return json.dumps({
+                "product_name": "Coda Free plan", "price": 0, "currency": "USD",
+                "region": "US", "availability": "in_stock",
+            })
+
+        def telemetry(self):
+            return {"provider": "test", "calls": self.calls,
+                    "provider_attempts": self.calls, "fallbacks_count": 0,
+                    "fallbacks": []}
+
+    class Scraper:
+        def fetch(self, url, region=None):
+            text = (
+                "# Pricing\nThe Free plan is free forever."
+                if url.endswith("/pricing")
+                else "# Docs and team hubs\nProduct overview without a listed price."
+            )
+            return ScrapedPage(url=url, markdown=text, region=region), ScrapeLog(url=url, region=region)
+
+    client = Client()
+    events = []
+    store = OfferStore()
+    target = CompetitorTarget(
+        company="Coda", website="https://coda.io", regions=["US"],
+        focus_products=["Team workspace and project management software"],
+    )
+    pipeline = Pipeline(
+        store=store,
+        review_store=ReviewStore(),
+        extractor=StructuredExtractor(client),
+        scraper=Scraper(),
+        progress_callback=events.append,
+    )
+    result = pipeline.run(target, run_id="coda-saas-regression")
+
+    assert result.pages_scraped == 2
+    assert result.extractions_ok == 1
+    assert result.extractions_skipped == 1
+    assert result.extractions_failed == 0
+    assert store.recent_offers(run_id=result.run_id)[0].price == 0
+    assert any(event["event"] == "extraction_skipped" for event in events)
+    assert result.metrics["extractions_skipped"] == 1
+    assert store.recent_runs(limit=1)[0]["extractions_skipped"] == 1
+
+
 # ---------------- verified-or-fail proxies ----------------
 def _verify_sg(proxy):
     return "SG"

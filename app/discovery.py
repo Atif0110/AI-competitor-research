@@ -310,6 +310,12 @@ def _candidate_score(url: str, website: str) -> int:
 
     score = 0
 
+    # Pricing pages are the highest-value input for a structured offer run.
+    # Rank them ahead of generic home/product pages so the per-entity budget
+    # does not get spent on pages that cannot contain comparable prices.
+    if any(segment in {"pricing", "plans"} for segment in segments):
+        score += 1500
+
     if canonical_url(url) == canonical_url(website):
         score += 1000
 

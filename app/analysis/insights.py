@@ -280,8 +280,11 @@ class InsightsEngine:
                 currency=best.currency,
                 runner_up=(runner.competitor or runner.seller) if runner else None,
                 runner_up_price=runner.price if runner else None,
-                gap_pct=round((_price_key(runner) - _price_key(best)) / _price_key(best) * 100, 2)
-                if runner else None,
+                gap_pct=(
+                    round((_price_key(runner) - _price_key(best)) / _price_key(best) * 100, 2)
+                    if runner and _price_key(best) > 0
+                    else None
+                ),
                 source_urls=src_urls, observation_times=times,
             ))
         results.sort(key=lambda u: u.product_name)

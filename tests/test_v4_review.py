@@ -228,6 +228,34 @@ def test_focus_filter_matches_path_only():
     assert kept == ["https://acme.example.com/product/pro-x-headphones"]
 
 
+def test_focus_filter_keeps_pricing_pages_for_category_research():
+    target = CompetitorTarget(
+        company="Acme",
+        website="https://acme.example.com",
+        focus_products=["Team workspace and project management software"],
+    )
+    urls = [
+        "https://acme.example.com/product/docs-and-team-hubs",
+        "https://acme.example.com/pricing",
+        "https://acme.example.com/features",
+    ]
+    kept = Pipeline._focus_filter(urls, target)
+    assert "https://acme.example.com/pricing" in kept
+    assert "https://acme.example.com/product/docs-and-team-hubs" in kept
+
+
+def test_free_competitor_offer_does_not_divide_by_zero(tmp_path):
+    store = _store(tmp_path)
+    store.upsert_offer(_mk_offer("Workspace plan", Region.US, 0, "free-run", "FreeCo", "https://free.example/pricing"))
+    store.upsert_offer(_mk_offer("Workspace plan", Region.US, 19, "paid-run", "PaidCo", "https://paid.example/pricing"))
+    insights = InsightsEngine(store, _review_store(tmp_path))
+    comparison = insights.undercut_analysis(Region.US)
+    assert len(comparison) == 1
+    assert comparison[0].leader == "FreeCo"
+    assert comparison[0].leader_price == 0
+    assert comparison[0].gap_pct is None
+
+
 # ---------------------------------------------------------------- #26
 def test_raw_evidence_stored(env):
     tmp = env

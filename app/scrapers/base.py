@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -47,14 +48,16 @@ class RateLimiter:
     def __init__(self, min_interval: float = 1.0):
         self.min_interval = min_interval
         self._last: Dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def wait(self, host: str) -> None:
         now = time.monotonic()
-        last = self._last.get(host, 0.0)
-        wait = (last + self.min_interval) - now
+        with self._lock:
+            scheduled = max(now, self._last.get(host, 0.0) + self.min_interval)
+            self._last[host] = scheduled
+        wait = scheduled - now
         if wait > 0:
             time.sleep(wait)
-        self._last[host] = time.monotonic()
 
 
 class ProxyPool:
@@ -71,6 +74,7 @@ class ProxyPool:
         self._regions = {k.upper(): list(v) for k, v in (by_region or {}).items()}
         self._rot: Dict[str, int] = defaultdict(int)
         self._healthy: Dict[str, bool] = {}
+        self._lock = threading.Lock()
         self.verify = verify  # callable proxy:str -> country_code:str|None
 
     @property
@@ -87,8 +91,9 @@ class ProxyPool:
             pool = self._generic
         if not pool:
             return None
-        i = self._rot[key]
-        self._rot[key] = i + 1
+        with self._lock:
+            i = self._rot[key]
+            self._rot[key] = i + 1
         return pool[i % len(pool)]
 
     def next_verified(self, region: Optional[str] = None) -> Optional[str]:

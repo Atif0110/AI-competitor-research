@@ -24,6 +24,7 @@ import logging
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -61,6 +62,7 @@ class RunStats:
     urls_failed: int = 0
     extractions_ok: int = 0
     extractions_failed: int = 0
+    extractions_skipped: int = 0
     extraction_attempts: int = 0
     retries_used: int = 0
     errors: List[str] = field(default_factory=list)
@@ -244,6 +246,11 @@ class Pipeline:
                         ent.website
                     )
 
+                    # Bound the amount of work before region fan-out. Discovery
+                    # ranks pricing/plans first, then the best product pages.
+                    page_limit = max(1, min(settings.competitive_pages_per_entity, 8))
+                    found = found[:page_limit]
+
                     logger.info(
                         "discovered %d URLs for %s",
                         len(found),
@@ -313,15 +320,26 @@ class Pipeline:
                     )
 
         keep = []
+        pricing_pages = []
 
         for url in urls:
             path = urlparse(url).path.lower()
+
+            if any(
+                segment in {"pricing", "plans"}
+                for segment in path.split("/")
+            ):
+                # A product/category focus must not filter away the pricing
+                # pages required for the price-comparison workflow.
+                pricing_pages.append(url)
 
             if any(
                 re.search(pattern, path)
                 for pattern in patterns
             ):
                 keep.append(url)
+
+        keep = list(dict.fromkeys(pricing_pages + keep))
 
         if not keep:
             logger.warning(
@@ -393,6 +411,22 @@ class Pipeline:
     # ------------------------------------------------------------------
     # MAIN RUN
     # ------------------------------------------------------------------
+
+    def _queue_scrapes(self, scraper, items, done, run_id):
+        """Fetch a bounded run's pages concurrently; keep model calls serial."""
+        pending = {}
+        workers = max(1, min(settings.competitive_scrape_concurrency, 6))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="research-scrape") as pool:
+            for index, (url, region) in enumerate(items, start=1):
+                key = f"{url}||{region}"
+                if key in done:
+                    continue
+                self._progress(
+                    "scrape_started", run_id=run_id, url=url, region=region,
+                    index=index, total=len(items),
+                )
+                pending[key] = pool.submit(scraper.fetch, url, region=region)
+        return pending
 
     def run(
         self,
@@ -498,6 +532,11 @@ class Pipeline:
             work_items=len(items),
         )
 
+        # Scraping is I/O bound, so overlap a few domains/pages. The scraper's
+        # per-host limiter still spaces requests; LLM extraction below remains
+        # serial so provider quotas and telemetry stay deterministic.
+        pending_scrapes = self._queue_scrapes(scraper, items, done, run_id)
+
         # --------------------------------------------------------------
         # PROCESS EACH URL / REGION
         # --------------------------------------------------------------
@@ -516,24 +555,12 @@ class Pipeline:
             if checkpoint_key in done:
                 continue
 
-            self._progress(
-                "scrape_started",
-                run_id=run_id,
-                url=url,
-                region=region,
-                index=index,
-                total=len(items),
-            )
-
             # ----------------------------------------------------------
             # SCRAPING
             # ----------------------------------------------------------
 
             try:
-                page, log = scraper.fetch(
-                    url,
-                    region=region,
-                )
+                page, log = pending_scrapes[checkpoint_key].result()
 
             except ScrapeError as exc:
                 stats.urls_failed += 1
@@ -658,6 +685,16 @@ class Pipeline:
                     self.review_store.add(
                         review
                     )
+
+            elif result.skipped:
+                stats.extractions_skipped += 1
+                self._progress(
+                    "extraction_skipped",
+                    run_id=run_id,
+                    url=url,
+                    region=region,
+                    reason=result.error or "No comparable offer on this page",
+                )
 
             else:
                 # ------------------------------------------------------
@@ -823,6 +860,7 @@ class Pipeline:
             extractions_failed=(
                 stats.extractions_failed
             ),
+            extractions_skipped=stats.extractions_skipped,
             retries_used=stats.retries_used,
             duration_s=duration,
             errors=stats.errors,
@@ -853,9 +891,9 @@ class Pipeline:
         duration: float,
         entities: List[Competitor],
     ) -> RunMetrics:
-        attempts = max(
+        extraction_outcomes = max(
             1,
-            stats.extraction_attempts,
+            stats.extractions_ok + stats.extractions_failed,
         )
 
         # Per-run product count.
@@ -909,9 +947,9 @@ class Pipeline:
             extraction_failures=(
                 stats.extractions_failed
             ),
+            extractions_skipped=stats.extractions_skipped,
             extraction_accuracy=round(
-                stats.extractions_ok
-                / attempts,
+                stats.extractions_ok / extraction_outcomes,
                 4,
             ),
             runtime_s=duration,

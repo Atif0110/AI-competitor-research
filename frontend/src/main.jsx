@@ -103,8 +103,10 @@ async function api(path, options = {}) {
 }
 
 const money = (n, currency = 'USD') =>
-  n == null || n === 0
+  n == null
     ? '—'
+    : Number(n) === 0
+      ? 'Free'
     : currency === 'USD'
       ? `$${Number(n).toFixed(2)}`
       : `${Number(n).toFixed(2)} ${currency}`;
@@ -578,14 +580,18 @@ const STAGE_ORDER = PIPELINE_STAGES.map((stage) => stage.key);
 
 function ResearchPipeline({ status, events }) {
   const seen = new Set((events || []).map((event) => event.event));
-  const reached = STAGE_ORDER.findIndex((key) => seen.has(key));
+  const stageSeen = (key) => key === 'extraction_succeeded'
+    ? ['extraction_succeeded', 'extraction_skipped', 'extraction_failed'].some((event) => seen.has(event))
+    : seen.has(key);
+  const reached = STAGE_ORDER.findIndex(stageSeen);
   const finished = status === 'completed' || status === 'failed';
 
   const counts = useMemo(() => {
     const scraped = (events || []).filter((e) => e.event === 'scrape_succeeded').length;
     const extracted = (events || []).filter((e) => e.event === 'extraction_succeeded').length;
     const failed = (events || []).filter((e) => e.event === 'extraction_failed').length;
-    return { scraped, extracted, failed };
+    const skipped = (events || []).filter((e) => e.event === 'extraction_skipped').length;
+    return { scraped, extracted, failed, skipped };
   }, [events]);
 
   return (
@@ -594,13 +600,14 @@ function ResearchPipeline({ status, events }) {
         <h3>Pipeline progress</h3>
         <span className="pipeline-counts">
           {counts.scraped} scraped · {counts.extracted} extracted
-          {counts.failed ? ` · ${counts.failed} rejected` : ''}
+          {counts.skipped ? ` · ${counts.skipped} skipped (no priced offer)` : ''}
+          {counts.failed ? ` · ${counts.failed} extraction errors` : ''}
         </span>
       </div>
 
       <ol className="pipeline-track">
         {PIPELINE_STAGES.map((stage, index) => {
-          const done = seen.has(stage.key);
+          const done = stageSeen(stage.key);
           const current = !finished && index === reached;
           const past = reached > index;
           const state = done || past ? 'complete' : current ? 'current' : 'pending';
@@ -618,9 +625,10 @@ function ResearchPipeline({ status, events }) {
 
       <ol className="pipeline-events">
         {(events || []).slice(-4).reverse().map((event, index) => (
-          <li className={`event-row${event.event === 'extraction_failed' ? ' event-bad' : ''}`} key={`${event.timestamp}-${index}`}>
+          <li className={`event-row${event.event === 'extraction_failed' ? ' event-bad' : event.event === 'extraction_skipped' ? ' event-skipped' : ''}`} key={`${event.timestamp}-${index}`}>
             <span className="event-time mono">{new Date(event.timestamp).toLocaleTimeString()}</span>
-            <span className="event-name">{pretty(event.event)}</span>
+            <span className="event-name">{event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : pretty(event.event)}</span>
+            {(event.reason || event.error) && <small className="event-detail">{event.reason || event.error}</small>}
             {event.url && (
               <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">
                 {short(event.url, 44)}
@@ -738,9 +746,9 @@ function CompetitiveRun({ onStart, runId }) {
               <input required type="url" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://acme.com" />
             </label>
             <label className="field">
-              <span>Focus products</span>
+              <span>Focus products or category</span>
               <input value={products} onChange={(e) => setProducts(e.target.value)} placeholder="Pro X Headphones, Air Buds Lite" />
-              <small>Comma separated. Leave empty to discover products automatically.</small>
+              <small>Comma separated. Pricing pages are kept in the search even when they do not include these words in the URL.</small>
             </label>
             <label className="field">
               <span>Competitors</span>
@@ -826,6 +834,9 @@ function CompetitiveRun({ onStart, runId }) {
                     )}
                     {job.result.reviews != null && (
                       <div><dt>Reviews stored</dt><dd className="mono">{num(job.result.reviews)}</dd></div>
+                    )}
+                    {job.result.extractions_skipped > 0 && (
+                      <div><dt>Pages without priced offers</dt><dd className="mono">{num(job.result.extractions_skipped)}</dd></div>
                     )}
                   </dl>
                 )}

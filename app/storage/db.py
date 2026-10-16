@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     competitors INTEGER, regions INTEGER, products INTEGER, urls_discovered INTEGER,
     urls_attempted INTEGER, urls_succeeded INTEGER, urls_failed INTEGER,
     scraping_success_rate REAL, retries_used INTEGER, extraction_attempts INTEGER,
-    extraction_successes INTEGER, extraction_failures INTEGER, extraction_accuracy REAL,
+    extraction_successes INTEGER, extraction_failures INTEGER, extractions_skipped INTEGER DEFAULT 0, extraction_accuracy REAL,
     runtime_s REAL, llm_calls INTEGER, provider_attempts INTEGER, fallbacks INTEGER,
     providers_used TEXT, scrapers_used TEXT, errors TEXT
 );
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     competitors INTEGER, regions INTEGER, products INTEGER, urls_discovered INTEGER,
     urls_attempted INTEGER, urls_succeeded INTEGER, urls_failed INTEGER,
     scraping_success_rate DOUBLE PRECISION, retries_used INTEGER, extraction_attempts INTEGER,
-    extraction_successes INTEGER, extraction_failures INTEGER, extraction_accuracy DOUBLE PRECISION,
+    extraction_successes INTEGER, extraction_failures INTEGER, extractions_skipped INTEGER DEFAULT 0, extraction_accuracy DOUBLE PRECISION,
     runtime_s DOUBLE PRECISION, llm_calls INTEGER, provider_attempts INTEGER, fallbacks INTEGER,
     providers_used TEXT, scrapers_used TEXT, errors TEXT
 );
@@ -99,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_offers_series ON offers(product_name, region, com
 """
 
 _NEW_COLUMNS = [
+    ("run_metrics", "extractions_skipped", "INTEGER DEFAULT 0"),
     ("offers", "competitor", "TEXT"), ("offers", "canonical_url", "TEXT"),
     ("offers", "normalized_price_usd", "REAL"), ("offers", "exchange_rate", "REAL"),
     ("offers", "exchange_rate_timestamp", "TEXT"), ("offers", "offer_key", "TEXT"),
@@ -142,6 +143,9 @@ class OfferStore:
         with self._connect() as conn:
             if self._postgres:
                 conn.execute(_PG_SCHEMA)
+                conn.execute(
+                    "ALTER TABLE run_metrics ADD COLUMN IF NOT EXISTS extractions_skipped INTEGER DEFAULT 0"
+                )
             else:
                 conn.executescript(_SQLITE_SCHEMA)
                 self._migrate(conn)
@@ -303,7 +307,8 @@ class OfferStore:
             m.get("competitors", 0), m.get("regions", 0), m.get("products", 0), m.get("urls_discovered", 0),
             m.get("urls_attempted", 0), m.get("urls_succeeded", 0), m.get("urls_failed", 0),
             m.get("scraping_success_rate", 0.0), m.get("retries_used", 0), m.get("extraction_attempts", 0),
-            m.get("extraction_successes", 0), m.get("extraction_failures", 0), m.get("extraction_accuracy", 0.0),
+            m.get("extraction_successes", 0), m.get("extraction_failures", 0),
+            m.get("extractions_skipped", 0), m.get("extraction_accuracy", 0.0),
             m.get("runtime_s", 0.0), m.get("llm_calls", 0), m.get("provider_attempts", 0), m.get("fallbacks", 0),
             json.dumps(m.get("providers_used", [])), json.dumps(m.get("scrapers_used", [])),
             json.dumps(m.get("errors", [])),
@@ -312,9 +317,9 @@ class OfferStore:
             (run_id, started_at, mode, target_company, competitors, regions, products,
              urls_discovered, urls_attempted, urls_succeeded, urls_failed,
              scraping_success_rate, retries_used, extraction_attempts, extraction_successes,
-             extraction_failures, extraction_accuracy, runtime_s, llm_calls, provider_attempts,
+             extraction_failures, extractions_skipped, extraction_accuracy, runtime_s, llm_calls, provider_attempts,
              fallbacks, providers_used, scrapers_used, errors)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(run_id) DO UPDATE SET
               started_at=excluded.started_at, mode=excluded.mode, target_company=excluded.target_company,
               competitors=excluded.competitors, regions=excluded.regions, products=excluded.products,
@@ -322,7 +327,8 @@ class OfferStore:
               urls_succeeded=excluded.urls_succeeded, urls_failed=excluded.urls_failed,
               scraping_success_rate=excluded.scraping_success_rate, retries_used=excluded.retries_used,
               extraction_attempts=excluded.extraction_attempts, extraction_successes=excluded.extraction_successes,
-              extraction_failures=excluded.extraction_failures, extraction_accuracy=excluded.extraction_accuracy,
+              extraction_failures=excluded.extraction_failures, extractions_skipped=excluded.extractions_skipped,
+              extraction_accuracy=excluded.extraction_accuracy,
               runtime_s=excluded.runtime_s, llm_calls=excluded.llm_calls,
               provider_attempts=excluded.provider_attempts, fallbacks=excluded.fallbacks,
               providers_used=excluded.providers_used, scrapers_used=excluded.scrapers_used, errors=excluded.errors"""

@@ -95,9 +95,9 @@ class ProductOffer(BaseModel):
 
     @field_validator("price")
     @classmethod
-    def price_must_be_positive(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError(f"price must be > 0, got {v}")
+    def price_must_be_nonnegative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError(f"price must be >= 0, got {v}")
         return round(v, 2)
 
     @field_validator("product_name")
@@ -219,6 +219,7 @@ class RunMetrics(BaseModel):
     extraction_attempts: int = 0
     extraction_successes: int = 0
     extraction_failures: int = 0
+    extractions_skipped: int = 0
     extraction_accuracy: float = 0.0
     runtime_s: float = 0.0
     llm_calls: int = 0
@@ -237,6 +238,7 @@ class PipelineResult(BaseModel):
     pages_scraped: int = 0
     extractions_ok: int = 0
     extractions_failed: int = 0
+    extractions_skipped: int = 0
     retries_used: int = 0
     duration_s: float = 0.0
     cached: bool = False

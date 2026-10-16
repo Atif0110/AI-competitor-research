@@ -115,3 +115,78 @@ def test_confidence_drops_for_suspicious_price():
         "# Pro X Headphones\nPrice: 0.01\nCurrency: USD\nRegion: US\n", "u")
     assert result.ok
     assert result.confidence < 1.0
+
+
+def test_non_offer_page_is_reported_as_skip_without_calling_model():
+    class NeverCalled:
+        provider_name = "test"
+
+        def complete(self, system, user):
+            raise AssertionError("non-offer URL should be skipped before an LLM call")
+
+    result = StructuredExtractor(NeverCalled()).extract(
+        "# Product documentation", "https://example.com/docs/api"
+    )
+    assert result.skipped
+    assert not result.ok
+    assert result.attempts == 0
+
+
+def test_model_classified_no_price_is_skip_not_extraction_error():
+    class SkipClient:
+        provider_name = "test"
+
+        def complete(self, system, user):
+            return '{"skip": true}'
+
+    result = StructuredExtractor(SkipClient()).extract(
+        "# Coda docs and team hubs\nA collaborative workspace.",
+        "https://coda.io/product/docs-and-team-hubs",
+    )
+    assert result.skipped
+    assert not result.ok
+    assert result.attempts == 1
+    assert "priced product offer" in result.error
+
+
+def test_prompt_input_is_bounded_and_retains_pricing_evidence():
+    content = "# Product\n\n" + ("A long feature description.\n" * 900)
+    content += "\n## Pricing\nThe Pro plan costs $19 per month.\n"
+    prompt = StructuredExtractor._build_product_prompt(
+        content=content,
+        url="https://example.com/pricing",
+        expected_region="US",
+    )
+    excerpt = prompt.split("PAGE CONTENT (relevant excerpt):\n", 1)[1]
+    assert len(excerpt) < settings.extraction_max_content_chars + 400
+    assert "$19 per month" in excerpt
+
+
+def test_explicit_free_plan_is_accepted_but_free_trial_is_not_zero_price():
+    class FreeClient:
+        provider_name = "test"
+
+        def __init__(self, price):
+            self.price = price
+
+        def complete(self, system, user):
+            return json.dumps({
+                "product_name": "Free plan", "price": 0, "currency": "USD",
+                "region": "US", "url": "https://example.com/pricing",
+                "availability": "in_stock",
+            })
+
+    extractor = StructuredExtractor(FreeClient(0))
+    explicit_free = extractor.extract(
+        "# Plans\nThe Free plan is free forever.",
+        "https://example.com/pricing",
+    )
+    assert explicit_free.ok
+    assert explicit_free.offer.price == 0
+
+    free_trial = extractor.extract(
+        "# Plans\nThe Pro plan includes a free trial for 30 days.",
+        "https://example.com/pricing",
+    )
+    assert not free_trial.ok
+    assert "Zero price" in free_trial.error
