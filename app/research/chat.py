@@ -115,7 +115,8 @@ class ResearchChat:
             if section.heading == "Captured structured offer"
         ]
         citations = self.documents.citations_for_run(run_id)
-        citation_refs = {citation.ref for citation in citations}
+        citations_by_ref = {citation.ref: citation for citation in citations}
+        citation_refs = set(citations_by_ref)
         rows = []
         for section in sections:
             match = re.search(
@@ -135,6 +136,7 @@ class ResearchChat:
                 "region": match.group(3).upper(),
                 "availability": availability.group(1).strip() if availability else "not captured",
                 "ref": section.source_ref,
+                "url": citations_by_ref[section.source_ref].url,
             })
 
         comparison_requested = bool(re.search(r"\b(cheaper|cheapest|lowest|compare|comparison)\b", question, re.I))
@@ -162,8 +164,22 @@ class ResearchChat:
             lines.append(
                 f"- {row['competitor']} — {row['product']}: "
                 f"{row['currency']} {row['price']:,.2f} ({row['region']}); "
-                f"availability {row['availability']} [{row['ref']}]."
+                f"availability {row['availability']}. Source: {row['url']} [{row['ref']}]."
             )
+
+        requested_company = re.search(
+            r"\b(?i:any|an?)\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,2})\s+(?i:offers?|prices?|plans?)\b",
+            question,
+        )
+        company_check = ""
+        if requested_company:
+            name = requested_company.group(1).strip()
+            present = any(name.casefold() in row["competitor"].casefold() for row in rows)
+            if not present:
+                company_check = (
+                    f"\n\n{name}: No captured offer in this run is attributed to this company. "
+                    "The listed offers belong to other companies."
+                )
 
         comparison = ""
         if comparison_requested:
@@ -187,7 +203,7 @@ class ResearchChat:
                     "not be like-for-like."
                 )
 
-        message = "Captured offers for this run:\n" + "\n".join(lines)
+        message = f"Captured offers in this run ({len(rows)}):\n" + "\n".join(lines) + company_check
         if comparison:
             message += "\n\n" + comparison
         refs = cited_refs(message)

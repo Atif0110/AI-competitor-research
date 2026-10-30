@@ -189,6 +189,54 @@ def test_competitive_run_chat_is_scoped_and_cited(tmp_path, monkeypatch):
     assert len(history.json()["messages"]) == 2
 
 
+def test_offer_chat_answers_requested_company_and_includes_source_url(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    import app.api as api_module
+    from app.config import settings
+    from app.schemas import Availability, Currency, ProductOffer, Region
+    from app.research.pipeline import DeepResearchPipeline
+    from app.storage.documents import DocumentStore
+
+    database_url = f"sqlite:///{tmp_path / 'offer-chat-answer.db'}"
+    store = OfferStore(database_url=database_url)
+    run_id = "jio-airtel-chat-123"
+    store.save_job(run_id, {
+        "job_id": run_id, "status": "completed",
+        "target": {
+            "company": "Jio", "website": "https://www.jio.com",
+            "regions": ["IN"], "competitors": [
+                {"name": "Airtel", "website": "https://www.airtel.in"}
+            ],
+        },
+        "events": [],
+    })
+    store.upsert_offer(ProductOffer(
+        product_name="Airtel Xstream Fiber Broadband Plan",
+        price=499, currency=Currency.INR, region=Region.IN,
+        url="https://www.airtel.in/plans/broadband/fiber",
+        availability=Availability.in_stock, competitor="Airtel", run_id=run_id,
+    ))
+    documents = DocumentStore(database_url=database_url)
+    monkeypatch.setattr(api_module, "_store", store)
+    monkeypatch.setattr(api_module, "_deep_pipeline", lambda: SimpleNamespace(documents=documents))
+    monkeypatch.setattr(settings, "api_key_required", False)
+    monkeypatch.setattr(settings, "llm_provider", "demo")
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    client = TestClient(api_module.app)
+
+    response = client.post("/research/chat", json={
+        "question": "List the source URL for each captured offer and identify the company. Did this run capture any Jio offer?",
+        "run_id": run_id, "session_id": "jio-airtel-chat-session",
+    })
+
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert "https://www.airtel.in/plans/broadband/fiber" in answer["message"]
+    assert "Airtel" in answer["message"]
+    assert "Jio: No captured offer" in answer["message"]
+
+
 def test_job_progress_persists_current_phase_and_bounds_event_log(monkeypatch):
     import app.api as api_module
 
