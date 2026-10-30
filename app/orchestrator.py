@@ -12,8 +12,9 @@ v4 changes:
   the final provider — ["groq", "openai"], never ["openai", "openai"] (#4).
 - metrics separate llm_calls / provider_attempts / fallbacks (#5) and count
   distinct canonical product IDs per run (#2).
-- focus_products matches the URL PATH only (#23) and returns 0 URLs with a
-  warning when nothing matches — never silently scrapes everything (#24).
+- focus_products matches the URL PATH only (#23); if a site's slug differs,
+  one best-ranked candidate per company is tried instead of returning 0 URLs
+  or scraping every discovered page (#24).
 - raw evidence (markdown + content hash) is stored per URL for debug/re-extract
   (review #26).
 """
@@ -233,10 +234,16 @@ class Pipeline:
     ) -> Tuple[List[str], list]:
         urls: List[str] = []
         errors: list = []
+        candidates_by_entity: list[tuple[Competitor, List[str]]] = []
 
         for ent in target.all_entities():
+            self._progress(
+                "discovery_entity_started",
+                company=ent.name,
+                website=ent.website,
+            )
             if demo:
-                urls += product_urls_for(
+                found = product_urls_for(
                     ent.name,
                     target.regions,
                 )
@@ -257,29 +264,45 @@ class Pipeline:
                         ent.name,
                     )
 
-                    urls += found
-
                 except Exception as exc:
                     errors.append(
                         f"discovery {ent.name}: {exc}"
                     )
+                    found = []
+
+            found = dedupe_urls(found)
+            candidates_by_entity.append((ent, found))
+            self._progress(
+                "discovery_entity_complete",
+                company=ent.name,
+                urls_discovered=len(found),
+            )
+
+        # A focus product is a ranking hint, not a hard requirement: URL paths
+        # often use product slugs/collections that differ from the user's
+        # wording. Keep the focused candidates when they match. If they do not,
+        # try just the top-ranked URL for that company rather than turning a
+        # valid research request into a zero-page run.
+        for entity, candidates in candidates_by_entity:
+            filtered = self._focus_filter(candidates, target)
+            if filtered is None and candidates:
+                fallback = candidates[:1]
+                urls.extend(fallback)
+                focus = ", ".join(target.focus_products[:3])
+                errors.append(
+                    f"focus filter: no URL path matched {focus!r} for {entity.name}; "
+                    f"trying the highest-ranked page ({fallback[0]}) instead. "
+                    "Clear Focus products or use a shorter category if it still misses."
+                )
+            elif filtered:
+                urls.extend(filtered)
+            else:
+                errors.append(
+                    f"discovery: no usable pages found for {entity.name}; "
+                    "check the official website URL or try again later."
+                )
 
         urls = dedupe_urls(urls)
-
-        filtered = self._focus_filter(
-            urls,
-            target,
-        )
-
-        if filtered is None:
-            errors.append(
-                "focus filter: no discovered URLs matched "
-                "focus_products — run will scrape 0 URLs "
-                "(broaden focus_products to proceed)"
-            )
-            urls = []
-        else:
-            urls = filtered
 
         return urls, errors
 

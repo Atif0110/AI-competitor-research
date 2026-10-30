@@ -669,7 +669,8 @@ function ResearchPipeline({ status, events }) {
   const stageSeen = (key) => key === 'extraction_succeeded'
     ? ['extraction_succeeded', 'extraction_skipped', 'extraction_failed'].some((event) => seen.has(event))
     : seen.has(key);
-  const reached = STAGE_ORDER.findIndex(stageSeen);
+  const matchedStage = STAGE_ORDER.findIndex(stageSeen);
+  const reached = matchedStage < 0 ? 0 : matchedStage;
   const finished = status === 'completed' || status === 'failed';
 
   const counts = useMemo(() => {
@@ -713,8 +714,8 @@ function ResearchPipeline({ status, events }) {
         {(events || []).slice(-4).reverse().map((event, index) => (
           <li className={`event-row${event.event === 'extraction_failed' ? ' event-bad' : event.event === 'extraction_skipped' ? ' event-skipped' : ''}`} key={`${event.timestamp}-${index}`}>
             <span className="event-time mono">{new Date(event.timestamp).toLocaleTimeString()}</span>
-            <span className="event-name">{event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : event.event === 'extraction_started' ? 'Extracting offer · waiting for model' : event.event === 'review_extraction_completed' ? `Review scan complete · ${num(event.reviews_found)} reviews` : pretty(event.event)}</span>
-            {(event.reason || event.error || event.product_name) && <small className="event-detail">{event.reason || event.error || event.product_name}</small>}
+            <span className="event-name">{event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : event.event === 'extraction_started' ? 'Extracting offer · waiting for model' : event.event === 'review_extraction_completed' ? `Review scan complete · ${num(event.reviews_found)} reviews` : event.event === 'discovery_entity_started' ? `Finding pages · ${event.company}` : event.event === 'discovery_entity_complete' ? `Pages checked · ${event.company}` : pretty(event.event)}</span>
+            {(event.reason || event.error || event.product_name || event.website) && <small className="event-detail">{event.reason || event.error || event.product_name || event.website}</small>}
             {event.url && (
               <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">
                 {short(event.url, 44)}
@@ -850,7 +851,7 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk, not
             <label className="field">
               <span>Focus products or category</span>
               <input value={products} onChange={(e) => setProducts(e.target.value)} placeholder="Pro X Headphones, Air Buds Lite" />
-              <small>Comma separated. Pricing pages are kept in the search even when they do not include these words in the URL.</small>
+              <small>A hint for discovery. If the site uses different URL names, the top page for that company is still checked.</small>
             </label>
             <label className="field">
               <span>Competitors</span>
@@ -930,7 +931,7 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk, not
                 )}
                 <p className="muted">
                   {job.current_event?.event
-                    ? `${job.current_event.event === 'extraction_started' ? 'Waiting for product extraction response' : pretty(job.current_event.event)}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
+                    ? `${job.current_event.event === 'extraction_started' ? 'Waiting for product extraction response' : job.current_event.event === 'discovery_entity_started' ? `Finding pages for ${job.current_event.company}` : pretty(job.current_event.event)}${job.current_event.url ? ` · ${job.current_event.url}` : ''}`
                     : 'Waiting for the worker to pick this up.'}
                 </p>
                 {job.error && <p className="error-text">{job.error}</p>}
@@ -959,6 +960,12 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk, not
                       <div><dt>Pages without priced offers</dt><dd className="mono">{num(job.result.extractions_skipped)}</dd></div>
                     )}
                   </dl>
+                )}
+                {job.result?.metrics?.errors?.length > 0 && (
+                  <div className="run-notes" role="status">
+                    <strong>Research notes</strong>
+                    <ul>{job.result.metrics.errors.slice(0, 5).map((message, index) => <li key={index}>{message}</li>)}</ul>
+                  </div>
                 )}
                 {job.status === 'completed' && (
                   <div className="run-actions">

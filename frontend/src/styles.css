@@ -2899,6 +2899,9 @@ body {
 .evidence-text-heading { display: flex; justify-content: space-between; align-items: center; padding: 11px 13px; border-bottom: 1px solid #302b25; color: #d6cec2; font-size: 11px; }
 .evidence-text-heading small { color: #928a7c; }
 .evidence-captured-text .source-content { max-height: 330px; margin: 0; padding: 14px; overflow: auto; color: #aaa296; font: 10px/1.7 var(--mono); white-space: pre-wrap; }
+.run-notes { margin-top: 16px; padding: 13px 15px; border-left: 2px solid #c59a4d; background: rgba(197,154,77,.07); color: #d5c9b0; font-size: 11px; }
+.run-notes > strong { color: #e5cb8d; font-size: 11px; font-weight: 600; }
+.run-notes ul { display: grid; gap: 6px; margin-top: 7px; padding-left: 16px; list-style: disc; color: #a99e89; font-size: 10px; line-height: 1.55; }
 
 @media (max-width: 980px) {
   .workspace-shell { grid-template-columns: 248px minmax(0,1fr); }

@@ -177,6 +177,23 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
             _progress_for_job(job_id, event)
         pipeline = Pipeline(store=_store, review_store=_reviews, progress_callback=on_progress)
         result = pipeline.run(target, run_id=job_id)
+        result_payload = result.model_dump(mode="json")
+        result_payload["offers_captured"] = _store.count(run_id=job_id)
+        metrics = result_payload.get("metrics") or {}
+        if not metrics.get("urls_attempted"):
+            _set_job(
+                job_id,
+                status="failed",
+                error=(
+                    "No source pages could be checked. Confirm the company and competitor "
+                    "websites, then clear or broaden Focus products and try again."
+                ),
+                result=result_payload,
+                events=events,
+                chat_ready=False,
+                chat_error=None,
+            )
+            return
         chat_ready = False
         chat_error = None
         try:
@@ -191,8 +208,6 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
         except Exception as exc:
             chat_error = str(exc)[:300]
             logger.exception("could not index competitive run %s for grounded chat", job_id)
-        result_payload = result.model_dump(mode="json")
-        result_payload["offers_captured"] = _store.count(run_id=job_id)
         _set_job(job_id, status="completed", result=result_payload, events=events,
                  chat_ready=chat_ready, chat_error=chat_error)
     except Exception as exc:
