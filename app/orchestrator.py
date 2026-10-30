@@ -237,16 +237,18 @@ class Pipeline:
         candidates_by_entity: list[tuple[Competitor, List[str]]] = []
         entities = target.all_entities()
 
-        def discover_one(ent: Competitor) -> tuple[Competitor, List[str], Optional[str]]:
+        def discover_one(ent: Competitor, entity_index: int) -> tuple[Competitor, List[str], Optional[str]]:
             try:
                 if demo:
                     found = product_urls_for(ent.name, target.regions)
                 else:
-                    found = discover_urls_for_entity(ent.website)
+                    # Focus describes the primary company. Competitors are
+                    # searched independently so a Samsung model hint cannot
+                    # accidentally filter Apple or another rival.
+                    focus = target.focus_products if entity_index == 0 else []
+                    found = discover_urls_for_entity(ent.website, focus_products=focus)
                     # Keep enough candidates to preserve pricing and product
                     # coverage while bounding later regional fan-out.
-                    page_limit = max(1, min(settings.competitive_pages_per_entity, 8))
-                    found = found[:page_limit]
                     logger.info("discovered %d URLs for %s", len(found), ent.name)
                 return ent, dedupe_urls(found), None
             except Exception as exc:
@@ -260,7 +262,7 @@ class Pipeline:
         # The small fixed pool bounds resource use and keeps model calls serial.
         workers = max(1, min(4, len(entities)))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="research-discovery") as pool:
-            futures = {pool.submit(discover_one, ent): ent for ent in entities}
+            futures = {pool.submit(discover_one, ent, index): ent for index, ent in enumerate(entities)}
             for future in as_completed(futures):
                 ent, found, error = future.result()
                 if error:
@@ -282,19 +284,19 @@ class Pipeline:
         # wording. Keep the focused candidates when they match. If they do not,
         # try just the top-ranked URL for that company rather than turning a
         # valid research request into a zero-page run.
-        for entity, candidates in candidates_by_entity:
-            filtered = self._focus_filter(candidates, target)
+        page_limit = max(1, min(settings.competitive_pages_per_entity, 8))
+        for entity_index, (entity, candidates) in enumerate(candidates_by_entity):
+            filtered = self._focus_filter(candidates, target) if entity_index == 0 else candidates
             if filtered is None and candidates:
-                fallback = candidates[:1]
+                fallback = candidates[:page_limit]
                 urls.extend(fallback)
                 focus = ", ".join(target.focus_products[:3])
                 errors.append(
-                    f"focus filter: no URL path matched {focus!r} for {entity.name}; "
-                    f"trying the highest-ranked page ({fallback[0]}) instead. "
-                    "Clear Focus products or use a shorter category if it still misses."
+                    f"focus search: no URL path directly matched {focus!r} for {entity.name}; "
+                    f"checking the {len(fallback)} highest-ranked product, pricing, and search-result pages."
                 )
             elif filtered:
-                urls.extend(filtered)
+                urls.extend(filtered[:page_limit])
             else:
                 errors.append(
                     f"discovery: no usable pages found for {entity.name}; "

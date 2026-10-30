@@ -12,7 +12,7 @@ def _pipeline():
     return pipeline
 
 
-def test_focus_miss_falls_back_to_one_ranked_url_per_company(monkeypatch):
+def test_focus_miss_uses_multiple_ranked_pages_and_does_not_filter_competitor(monkeypatch):
     pages = {
         "https://acme.example": [
             "https://acme.example/products/earbuds",
@@ -24,7 +24,7 @@ def test_focus_miss_falls_back_to_one_ranked_url_per_company(monkeypatch):
             "https://rival.example/products/speakers",
         ],
     }
-    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", lambda website: pages[website])
+    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", lambda website, focus_products=(): pages[website])
     target = CompetitorTarget(
         company="Acme",
         website="https://acme.example",
@@ -36,10 +36,13 @@ def test_focus_miss_falls_back_to_one_ranked_url_per_company(monkeypatch):
 
     assert urls == [
         "https://acme.example/products/earbuds",
+        "https://acme.example/collections/audio",
+        "https://acme.example/products/overear",
         "https://rival.example/catalog/audio",
+        "https://rival.example/products/speakers",
     ]
-    assert len(notes) == 2
-    assert all("trying the highest-ranked page" in note for note in notes)
+    assert len(notes) == 1
+    assert "highest-ranked product" in notes[0]
 
 
 def test_focus_match_keeps_matching_and_pricing_candidates(monkeypatch):
@@ -50,7 +53,7 @@ def test_focus_match_keeps_matching_and_pricing_candidates(monkeypatch):
             "https://acme.example/about",
         ],
     }
-    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", lambda website: pages[website])
+    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", lambda website, focus_products=(): pages[website])
     target = CompetitorTarget(
         company="Acme",
         website="https://acme.example",
@@ -66,8 +69,31 @@ def test_focus_match_keeps_matching_and_pricing_candidates(monkeypatch):
     assert notes == []
 
 
+def test_focus_hint_is_sent_only_for_the_primary_company(monkeypatch):
+    observed = {}
+
+    def discover(website, focus_products=()):
+        observed[website] = list(focus_products)
+        return [f"{website}/products/item"]
+
+    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", discover)
+    target = CompetitorTarget(
+        company="Samsung",
+        website="https://samsung.example",
+        focus_products=["Galaxy S"],
+        competitors=[Competitor(name="Apple", website="https://apple.example")],
+    )
+
+    _pipeline()._discover(target, demo=False)
+
+    assert observed == {
+        "https://samsung.example": ["Galaxy S"],
+        "https://apple.example": [],
+    }
+
+
 def test_empty_discovery_reports_website_problem_not_focus_mismatch(monkeypatch):
-    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", lambda website: [])
+    monkeypatch.setattr(orchestrator, "discover_urls_for_entity", lambda website, focus_products=(): [])
     target = CompetitorTarget(
         company="Acme",
         website="https://acme.example",
@@ -91,7 +117,7 @@ def test_entity_discovery_runs_concurrently_but_keeps_input_order(monkeypatch):
         "https://rival.example": ["https://rival.example/products/b"],
     }
 
-    def discover(website):
+    def discover(website, focus_products=()):
         nonlocal active, peak
         with lock:
             active += 1

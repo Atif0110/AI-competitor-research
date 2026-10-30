@@ -58,7 +58,7 @@ class CompetitorTarget(BaseModel):
     company: str = Field(min_length=1, max_length=150)
     website: str = Field(min_length=4, max_length=2048)
     regions: List[Region] = Field(default_factory=lambda: [Region.US], max_length=9)
-    focus_products: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=50)
+    focus_products: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=10)
     competitors: List[Competitor] = Field(default_factory=list, max_length=50)
 
     @field_validator("website")

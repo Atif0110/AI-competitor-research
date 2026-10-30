@@ -27,7 +27,7 @@ from typing import Iterable, List
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
-from app.url_safety import safe_http_get
+from app.url_safety import is_public_http_url, safe_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,18 @@ _HIGH_SIGNAL_PATH_SEGMENTS = {
     "services",
     "business",
     "teams",
+    "shop",
+    "store",
+    "buy",
+    "collection",
+    "collections",
+    "catalog",
+    "category",
+    "categories",
+    "smartphone",
+    "smartphones",
+    "phone",
+    "phones",
 }
 
 _DROP_QUERY = {
@@ -307,7 +319,22 @@ def _is_extractable_candidate(url: str) -> bool:
     return is_product_url(url)
 
 
-def _candidate_score(url: str, website: str) -> int:
+def _focus_score(url: str, focus_products: Iterable[str]) -> int:
+    path = "/".join(_path_segments(url))
+    tokens = set(re.findall(r"[a-z0-9]+", path))
+    score = 0
+    for focus in focus_products:
+        focus_tokens = [token for token in re.findall(r"[a-z0-9]+", focus.lower()) if len(token) > 2]
+        if not focus_tokens:
+            continue
+        score += 2000 * sum(token in tokens for token in focus_tokens)
+        compact = "-".join(focus_tokens)
+        if compact and compact in path:
+            score += 1000
+    return score
+
+
+def _candidate_score(url: str, website: str, focus_products: Iterable[str] = ()) -> int:
     """Score URLs so high-signal commercial pages are processed first."""
     parsed = urlparse(url)
     segments = _path_segments(url)
@@ -320,11 +347,16 @@ def _candidate_score(url: str, website: str) -> int:
     if any(segment in {"pricing", "plans"} for segment in segments):
         score += 1500
 
+    if any(segment in {"product", "products", "item", "items"} for segment in segments):
+        score += 250
+
     if canonical_url(url) == canonical_url(website):
-        score += 1000
+        # Keep the supplied page in consideration, while ranking discovered
+        # product and store pages above a generic homepage.
+        score += 100
 
     if not segments:
-        score += 900
+        score += 50
 
     score += sum(
         100
@@ -337,6 +369,8 @@ def _candidate_score(url: str, website: str) -> int:
     if parsed.query:
         score -= 5
 
+    score += _focus_score(url, focus_products)
+
     return score
 
 
@@ -344,6 +378,7 @@ def _rank_and_limit_candidates(
     urls: Iterable[str],
     website: str,
     limit: int = MAX_DISCOVERY_CANDIDATES,
+    focus_products: Iterable[str] = (),
 ) -> List[str]:
     """Canonicalize, dedupe, rank and hard-cap candidate URLs."""
     candidates = dedupe_urls(urls)
@@ -356,7 +391,7 @@ def _rank_and_limit_candidates(
 
     candidates.sort(
         key=lambda url: (
-            -_candidate_score(url, website),
+            -_candidate_score(url, website, focus_products),
             len(url),
             url,
         )
@@ -516,6 +551,7 @@ def _firecrawl_link_url(
 
 def discover_firecrawl(
     website: str,
+    focus_products: Iterable[str] = (),
 ) -> List[str]:
     """Discover candidate intelligence URLs through Firecrawl /map."""
     import requests
@@ -592,6 +628,7 @@ def discover_firecrawl(
     result = _rank_and_limit_candidates(
         candidates,
         website,
+        focus_products=focus_products,
     )
 
     logger.info(
@@ -649,6 +686,7 @@ def _loc_links(
 
 def discover_sitemaps(
     website: str,
+    focus_products: Iterable[str] = (),
 ) -> List[str]:
     """Discover candidate intelligence URLs through sitemap files."""
     allowed_hosts = _resolve_allowed_hosts(
@@ -779,6 +817,7 @@ def discover_sitemaps(
     result = _rank_and_limit_candidates(
         urls,
         website,
+        focus_products=focus_products,
     )
 
     logger.info(
@@ -797,6 +836,7 @@ def discover_sitemaps(
 
 def _seed_common_intelligence_urls(
     website: str,
+    focus_products: Iterable[str] = (),
 ) -> List[str]:
     """Generate a small set of conventional commercial URLs.
 
@@ -837,7 +877,29 @@ def _seed_common_intelligence_urls(
     return _rank_and_limit_candidates(
         seeded,
         website,
+        focus_products=focus_products,
     )
+
+
+def _discover_search_urls(website: str, focus_products: Iterable[str]) -> List[str]:
+    """Use a bounded keyless site query to find product pages outside sitemaps."""
+    from app.research.sources import DuckDuckGoSearch
+
+    host = _hostname(website)
+    focus = " ".join(str(value).strip() for value in focus_products if str(value).strip())[:160]
+    query = f"site:{host} {focus} price buy product".strip()
+    try:
+        hits = DuckDuckGoSearch(timeout=4).search(query, limit=8)
+    except Exception as exc:
+        logger.info("site search failed for %s: %s", host, type(exc).__name__)
+        return []
+    return [
+        hit.url for hit in hits
+        if hit.url
+        and is_public_http_url(hit.url)
+        and _same_domain(hit.url, website)
+        and _is_extractable_candidate(hit.url)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -847,43 +909,44 @@ def _seed_common_intelligence_urls(
 
 def discover_urls_for_entity(
     website: str,
+    focus_products: Iterable[str] = (),
 ) -> List[str]:
     """Discover candidate research URLs using multiple strategies.
 
-    Strategy:
-
-    1. Firecrawl Map.
-    2. Sitemap discovery if Firecrawl has no useful candidates.
-    3. Common commercial URL seeds as a final fallback.
+    Combine focused keyless search, Firecrawl, and sitemap results. Search
+    catches product pages missing from sitemaps; sitemaps provide breadth.
 
     The extractor remains responsible for deciding whether a scraped page
     actually contains a valid commercial ProductOffer.
     """
 
     # --------------------------------------------------------------
-    # 1. Firecrawl
+    focus_products = tuple(focus_products)
+    found: list[str] = []
+
+    # Search is cheap, keyless, and useful when the URL slug differs from the
+    # phrase supplied by the user. Results remain on the requested host.
+    found.extend(_discover_search_urls(website, focus_products))
+
+    # Firecrawl supplements search rather than short-circuiting sitemaps.
     # --------------------------------------------------------------
 
-    if settings.firecrawl_api_key:
+    if settings.firecrawl_api_key and len(found) < 3:
         try:
-            found = discover_firecrawl(
-                website
+            firecrawl_found = discover_firecrawl(
+                website,
+                focus_products=focus_products,
             )
 
-            if found:
+            if firecrawl_found:
                 logger.info(
                     "using %d URLs discovered by Firecrawl for %s",
-                    len(found),
+                    len(firecrawl_found),
                     website,
                 )
-
-                return found
-
-            logger.warning(
-                "Firecrawl returned no usable URLs for %s; "
-                "falling back to sitemap discovery",
-                website,
-            )
+                found.extend(firecrawl_found)
+            else:
+                logger.warning("Firecrawl returned no usable URLs for %s", website)
 
         except Exception as exc:
             logger.warning(
@@ -893,43 +956,26 @@ def discover_urls_for_entity(
             )
 
     # --------------------------------------------------------------
-    # 2. Sitemap
+    # Sitemaps add broad coverage after search, unless search already returned
+    # enough candidates to fill the per-company page budget with headroom.
     # --------------------------------------------------------------
 
-    try:
-        found = discover_sitemaps(
-            website
-        )
+    if len(found) < 8:
+        try:
+            found.extend(discover_sitemaps(website, focus_products=focus_products))
 
-        if found:
-            logger.info(
-                "using %d URLs discovered through sitemap for %s",
-                len(found),
-                website,
-            )
-
-            return found
-
-    except Exception as exc:
-        logger.warning(
-            "sitemap discovery failed for %s: %s",
-            website,
-            exc,
-        )
+        except Exception as exc:
+            logger.warning("sitemap discovery failed for %s: %s", website, exc)
 
     # --------------------------------------------------------------
     # 3. Last-resort conventional paths
     # --------------------------------------------------------------
 
-    seeded = _seed_common_intelligence_urls(
-        website
-    )
+    if not found:
+        seeded = _seed_common_intelligence_urls(website, focus_products=focus_products)
+        logger.warning("no search or sitemap URLs for %s; using %d conventional candidates", website, len(seeded))
+        found.extend(seeded)
 
-    logger.warning(
-        "no discovered URLs for %s; "
-        "using %d conventional intelligence URL candidates",
-        website,
-        len(seeded),
+    return _rank_and_limit_candidates(
+        found, website, focus_products=focus_products
     )
-
-    return seeded

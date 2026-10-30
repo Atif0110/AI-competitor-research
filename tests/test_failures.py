@@ -129,7 +129,7 @@ def test_competitive_run_keeps_pricing_and_reports_non_offer_as_skip(tmp_path, m
         "https://coda.io/product/docs-and-team-hubs",
         "https://coda.io/pricing",
     ]
-    monkeypatch.setattr(orchestration, "discover_urls_for_entity", lambda website: urls)
+    monkeypatch.setattr(orchestration, "discover_urls_for_entity", lambda website, focus_products=(): urls)
 
     class Client:
         provider_name = "test"

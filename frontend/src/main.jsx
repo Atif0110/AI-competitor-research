@@ -851,7 +851,7 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk, not
             <label className="field">
               <span>Focus products or category</span>
               <input value={products} onChange={(e) => setProducts(e.target.value)} placeholder="Pro X Headphones, Air Buds Lite" />
-              <small>A hint for discovery. If the site uses different URL names, the top page for that company is still checked.</small>
+              <small>Search hint for the main company. Competitors are discovered independently.</small>
             </label>
             <label className="field">
               <span>Competitors</span>
