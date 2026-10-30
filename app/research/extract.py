@@ -25,14 +25,14 @@ from app.research.models import Fact, PageDocument, PageType, ResearchPlan, Rese
 logger = logging.getLogger(__name__)
 
 _FACT_SYSTEM = (
-    "You extract competitive-intelligence facts from a web page. Reply with JSON only:\n"
+    "You extract evidence-backed research facts from a web page or published document. Reply with JSON only:\n"
     '{"facts": [{"question": str, "statement": str, "value": str|null, '
     '"confidence": 0.0-1.0, "quote": str}]}.\n'
     "Rules:\n"
     "1. Only state facts the page supports; every fact must have a short verbatim "
     "quote copied from the page.\n"
     "2. Answer the given questions when the page supports an answer; skip the rest.\n"
-    "3. Prefer concrete values: prices, limits, dates, counts, percentages, names.\n"
+    "3. Preserve important dates, measurements, methods, names, results, and qualifications relevant to the research question.\n"
     "4. If the page supports nothing relevant, return {\"facts\": []}.\n"
     "5. No markdown fences, no commentary."
 )

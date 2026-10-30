@@ -143,8 +143,10 @@ def url_score(url: str, plan: ResearchPlan) -> float:
     score -= depth * 0.4
     if path in ("", "/"):
         score += 1.0  # the root page is usually a good overview
-    if re.search(r"\.(jpg|png|pdf|zip)$", path):
+    if re.search(r"\.(jpg|jpeg|png|gif|webp|zip|gz|mp4|mp3)$", path):
         score -= 10.0
+    if path.endswith(".pdf"):
+        score += 2.0
     return score
 
 
@@ -278,6 +280,38 @@ class Crawler:
                 page_type=classify_by_url(url),
             )
 
+        if not result.html and (
+            "pdf" in result.content_type.lower()
+            or (result.final_url or url).lower().split("?", 1)[0].endswith(".pdf")
+            or result.body.startswith(b"%PDF-")
+        ):
+            text, title, error = _extract_pdf_text(result.body, self.max_chars)
+            if not text:
+                return PageDocument(
+                    url=url,
+                    final_url=result.final_url or url,
+                    status="skipped",
+                    http_status=result.status,
+                    error=error or "PDF has no extractable text; scanned PDFs need OCR",
+                    depth=depth,
+                    scraper="pdf",
+                    page_type=PageType.article,
+                )
+            return PageDocument(
+                url=url,
+                final_url=result.final_url or url,
+                status="fetched",
+                http_status=result.status,
+                title=title or url.rsplit("/", 1)[-1],
+                text=text[:self.max_chars],
+                markdown=text[:self.max_chars],
+                depth=depth,
+                scraper="pypdf",
+                content_hash=content_hash(text),
+                page_type=PageType.article,
+                relevance=_relevance(text, title, plan),
+            )
+
         if not result.html:
             # Not an HTML page (PDF/asset): record it without pretending we
             # read its contents.
@@ -314,6 +348,46 @@ class Crawler:
             page_type=page_type,
             relevance=relevance,
         )
+
+
+def _extract_pdf_text(data: bytes, max_chars: int) -> tuple[str, str, Optional[str]]:
+    if not data:
+        return "", "", "PDF response contained no data"
+    try:
+        from io import BytesIO
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(data), strict=False)
+        if reader.is_encrypted:
+            try:
+                if not reader.decrypt(""):
+                    return "", "", "PDF is encrypted and cannot be read without a password"
+            except Exception:
+                return "", "", "PDF is encrypted and cannot be read without a password"
+
+        title = str((reader.metadata.title if reader.metadata else "") or "").strip()
+        chunks: list[str] = []
+        total = 0
+        for page in reader.pages[:60]:
+            remaining = max_chars - total
+            if remaining <= 0:
+                break
+            try:
+                page_text = (page.extract_text() or "").strip()
+            except Exception:
+                logger.info("could not extract text from one PDF page", exc_info=True)
+                continue
+            if page_text:
+                page_text = page_text[:remaining]
+                chunks.append(page_text)
+                total += len(page_text)
+        text = "\n\n".join(chunks).strip()
+        if not text:
+            return "", title, "PDF contains no extractable text; scanned PDFs need OCR"
+        return text, title, None
+    except Exception as exc:
+        logger.info("PDF parsing failed (%s)", type(exc).__name__)
+        return "", "", "PDF could not be parsed"
 
 
 def _relevance(text: str, head: str, plan: ResearchPlan) -> float:

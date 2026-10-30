@@ -300,7 +300,7 @@ function App() {
   const online = health?.status === 'ok';
   const navGroups = [
     { label: 'Workspace', items: [['dashboard', 'Overview', 'grid'], ['history', 'Research history', 'layers']] },
-    { label: 'Build the research', items: [['run', 'Competitive run', 'target'], ['deep', 'Deep research', 'compass']] },
+    { label: 'Build the research', items: [['deep', 'Web research', 'compass'], ['run', 'Compare companies', 'target']] },
     { label: 'Review findings', items: [['evidence', 'Evidence library', 'doc'], ['signals', 'Market signals', 'pulse'], ['chat', 'Research chat', 'chat'], ['reports', 'Reports', 'doc']] },
   ];
   const normalizedNavFilter = navFilter.trim().toLowerCase();
@@ -357,7 +357,7 @@ function App() {
           <div className="workspace-crumb"><span>Scope</span><span aria-hidden="true">/</span><strong>{pageTitle}</strong></div>
           <div className="workspace-topbar-actions">
             <div className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite" title={health?.llm_provider_chain?.length ? `Route: ${health.llm_provider_chain.join(' / ')}` : undefined}><span className="connection-dot" /><span>{online ? 'Connected' : health?.status === 'error' ? 'Offline' : 'Connecting'}</span></div>
-            <button className="btn-primary site-new" onClick={() => navigate('run')} aria-label="New research"><Icon name="plus" size={15} /><span>New research</span></button>
+            <button className="btn-primary site-new" onClick={() => navigate('deep')} aria-label="New research"><Icon name="plus" size={15} /><span>New research</span></button>
           </div>
         </header>
         <div className="content">
@@ -412,34 +412,27 @@ function App() {
 /* overview                                                            */
 /* ------------------------------------------------------------------ */
 function Dashboard({ runId, onNavigate, onOpenRun, health }) {
-  const [metrics, setMetrics] = useState(null);
   const [history, setHistory] = useState([]);
   const [historyError, setHistoryError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [metricsError, setMetricsError] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let current = true;
     setLoading(true);
-    setMetricsError(false);
     setHistoryError('');
-    Promise.allSettled([
-      api('/metrics/aggregate'),
-      api('/research/runs?limit=100'),
-    ]).then(([aggregateResult, historyResult]) => {
+    api('/research/runs?limit=100').then((historyResult) => {
       if (!current) return;
-      if (aggregateResult.status === 'fulfilled' && aggregateResult.value) {
-        setMetrics(aggregateResult.value);
-      } else {
-        setMetrics(null);
-        setMetricsError(true);
-      }
-      if (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
-        setHistory(historyResult.value);
+      if (Array.isArray(historyResult)) {
+        setHistory(historyResult);
       } else {
         setHistory([]);
-        setHistoryError(historyResult.reason?.message || 'The API did not return saved runs.');
+        setHistoryError('The API did not return saved runs.');
+      }
+    }).catch((error) => {
+      if (current) {
+        setHistory([]);
+        setHistoryError(error.message || 'The API did not return saved runs.');
       }
     }).finally(() => {
       if (current) setLoading(false);
@@ -448,8 +441,10 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
   }, [runId, refreshKey]);
 
   const offers = health?.offers;
-  const products = metrics?.total_products;
-  const regions = metrics?.total_regions;
+  const sourcePages = history.reduce((total, run) => {
+    const runStats = run.kind === 'deep' ? run.coverage : run.metrics;
+    return total + Number(run.kind === 'deep' ? runStats?.pages_fetched || 0 : runStats?.urls_succeeded || 0);
+  }, 0);
   const latestRun = history[0];
   const latestStats = latestRun?.kind === 'deep' ? latestRun.coverage : latestRun?.metrics;
   const latestSources = latestRun?.kind === 'deep' ? latestStats?.pages_fetched : latestStats?.urls_succeeded;
@@ -459,12 +454,12 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
     <>
       <section className="landing-hero">
         <div className="landing-copy">
-          <div className="landing-eyebrow"><span /> COMPETITOR RESEARCH · SOURCE LED</div>
-          <h1>Read the market<br />between the <em>moves.</em></h1>
-          <p>Track competitor offers and market signals from the original page to the final finding. Every claim stays connected to its source.</p>
+          <div className="landing-eyebrow"><span /> EVIDENCE-FIRST RESEARCH · ANY TOPIC</div>
+          <h1>Understand what<br />the evidence <em>says.</em></h1>
+          <p>Investigate a question, website, or published paper. Follow the source trail from captured evidence to cited findings, and see what remains unanswered.</p>
           <div className="landing-actions">
-            <button className="btn-primary" onClick={() => onNavigate('run')}>Start a comparison <Icon name="arrow" size={15} /></button>
-            <button className="editorial-link" onClick={() => onNavigate('deep')}>Explore a market question <Icon name="arrow" size={14} /></button>
+            <button className="btn-primary" onClick={() => onNavigate('deep')}>Start web research <Icon name="arrow" size={15} /></button>
+            <button className="editorial-link" onClick={() => onNavigate('run')}>Compare companies <Icon name="arrow" size={14} /></button>
           </div>
           <div className="landing-caption"><span className={`connection-dot${health?.status === 'ok' ? ' connection-dot-live' : ''}`} /> {health?.status === 'ok' ? `Research system online · ${health.active_llm_provider || 'AI route ready'}` : 'Connecting to research system'}</div>
         </div>
@@ -483,23 +478,23 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
                 <div className="preview-index-rule" />
                 <small>THE EVIDENCE PATH</small>
                 <div className={`preview-step${latestRun && latestSources ? ' is-done' : ''}`}><i /><span>Source pages</span></div>
-                <div className={`preview-step${latestOffers ? ' is-done' : ''}`}><i /><span>Structured offers</span></div>
-                <div className="preview-step"><i /><span>Market signals</span></div>
+                <div className={`preview-step${latestRun ? ' is-done' : ''}`}><i /><span>Claims & findings</span></div>
+                <div className={`preview-step${latestRun?.kind === 'deep' && latestRun.coverage?.facts ? ' is-done' : ''}`}><i /><span>Cited conclusions</span></div>
               </aside>
               <div className="preview-report">
                 <div className="preview-report-head">
-                  <div><small>{latestRun ? 'MOST RECENT STUDY' : 'YOUR PRIVATE RESEARCH WORKSPACE'}</small><h2>{latestRun?.title || 'A clearer view of your competitors.'}</h2></div>
+                  <div><small>{latestRun ? 'MOST RECENT STUDY' : 'YOUR RESEARCH WORKSPACE'}</small><h2>{latestRun?.title || 'A question, explored with evidence.'}</h2></div>
                   {latestRun && <button className="preview-open" onClick={() => onOpenRun(latestRun)} aria-label="Open latest saved research"><Icon name="arrow" size={17} /></button>}
                 </div>
                 <div className="preview-coverage">
                   <div className="coverage-heading"><span>Evidence coverage</span><small>{latestRun ? `${num(latestSources)} pages captured` : 'Your captured evidence, at a glance'}</small></div>
                   <div className="coverage-metrics">
                     <div><strong>{latestRun && latestSources != null ? num(latestSources) : '—'}</strong><small>Source pages captured</small></div>
-                    <div><strong>{latestRun && latestOffers != null ? num(latestOffers) : '—'}</strong><small>Validated offers</small></div>
+                    <div><strong>{latestRun?.kind === 'deep' ? num(latestRun.coverage?.facts) : latestOffers != null ? num(latestOffers) : '—'}</strong><small>{latestRun?.kind === 'deep' ? 'Evidence-backed facts' : 'Validated offers'}</small></div>
                   </div>
                 </div>
                 <div className="preview-foot">
-                  <div><small>RESEARCH PATH</small><strong>{latestRun ? latestRun.kind === 'deep' ? 'Deep research' : 'Competitive intelligence' : 'Company · category · region'}</strong></div>
+                  <div><small>RESEARCH PATH</small><strong>{latestRun ? latestRun.kind === 'deep' ? 'Web research' : 'Company comparison' : 'Question · website · paper'}</strong></div>
                   <div><small>COMPUTE</small><strong>{latestRun?.duration_s ? `${num(latestRun.duration_s)} sec` : 'Usage tracked per run'}</strong></div>
                   <div><small>SOURCE TRAIL</small><strong>Open evidence at the claim</strong></div>
                 </div>
@@ -512,23 +507,21 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
 
       <section className="workspace-totals" aria-label="Research workspace totals">
         <div className="totals-intro"><span>YOUR INTELLIGENCE FILE</span><small>{loading ? 'Updating workspace' : `${num(history.length)} saved studies`}</small></div>
-        <div className="total-item"><strong>{health ? num(offers) : '—'}</strong><span>Offers captured</span></div>
-        <div className="total-item"><strong>{metrics ? num(products) : '—'}</strong><span>Products observed</span></div>
-        <div className="total-item"><strong>{metrics ? num(regions) : '—'}</strong><span>Regions covered</span></div>
+        <div className="total-item"><strong>{loading ? '—' : num(history.length)}</strong><span>Saved studies</span></div>
+        <div className="total-item"><strong>{loading ? '—' : num(sourcePages)}</strong><span>Source pages captured</span></div>
+        <div className="total-item"><strong>{health ? num(offers) : '—'}</strong><span>Structured offers</span></div>
         <button className="totals-refresh" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading} aria-label="Refresh workspace totals"><Icon name="refresh" size={15} /></button>
       </section>
-      {metricsError && <p className="data-warning" role="status">Workspace totals could not be loaded. Refresh to try again.</p>}
-
       <section className="research-paths">
         <div className="section-heading"><div><span className="eyebrow">CHOOSE YOUR ENTRY POINT</span><h2>Start with the question you have.</h2></div></div>
         <div className="path-grid">
-          <button className="path-card path-card-compare" onClick={() => onNavigate('run')}>
-            <span className="path-symbol"><Icon name="target" size={19} /></span><span className="path-arrow"><Icon name="arrow" size={16} /></span>
-            <small>COMPETITIVE STUDY</small><strong>Compare a company<br />with its rivals.</strong><p>Track offers, regions, and pricing across named competitors.</p>
-          </button>
           <button className="path-card path-card-deep" onClick={() => onNavigate('deep')}>
             <span className="path-symbol"><Icon name="compass" size={19} /></span><span className="path-arrow"><Icon name="arrow" size={16} /></span>
-            <small>DEEP RESEARCH</small><strong>Investigate a market<br />question.</strong><p>Start from a topic or URL. Get cited findings and clear evidence gaps.</p>
+            <small>WEB RESEARCH</small><strong>Investigate any<br />question or source.</strong><p>Research a topic, crawl a website, or analyze published papers with cited findings.</p>
+          </button>
+          <button className="path-card path-card-compare" onClick={() => onNavigate('run')}>
+            <span className="path-symbol"><Icon name="target" size={19} /></span><span className="path-arrow"><Icon name="arrow" size={16} /></span>
+            <small>COMPANY COMPARISON</small><strong>Compare organizations<br />and their offers.</strong><p>Track structured products, prices, regions, and reviews across named companies.</p>
           </button>
         </div>
       </section>
@@ -549,7 +542,7 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
               </button>;
             })}
           </div>
-        ) : <div className="recent-empty"><span>No studies in the archive yet.</span><button className="editorial-link" onClick={() => onNavigate('run')}>Start your first study <Icon name="arrow" size={14} /></button></div>}
+        ) : <div className="recent-empty"><span>No studies in the archive yet.</span><button className="editorial-link" onClick={() => onNavigate('deep')}>Start your first study <Icon name="arrow" size={14} /></button></div>}
       </section>
     </>
   );
@@ -999,7 +992,7 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk, not
 /* deep research                                                       */
 /* ------------------------------------------------------------------ */
 const DEEP_MODES = [
-  ['url', 'A single site'],
+  ['url', 'Websites & papers'],
   ['topic', 'A topic'],
   ['compare', 'A comparison'],
 ];
@@ -1015,13 +1008,20 @@ const DEEP_TABS = [
 function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
   const [mode, setMode] = useState('url');
   const [url, setUrl] = useState('');
+  const [sourceUrls, setSourceUrls] = useState('');
   const [topic, setTopic] = useState('');
   const [rivals, setRivals] = useState('');
   const [question, setQuestion] = useState('');
-  const [pages, setPages] = useState(8);
+  const [pages, setPages] = useState(4);
   const [useSearch, setUseSearch] = useState(true);
   const [tab, setTab] = useState('report');
   const [busy, setBusy] = useState(false);
+  const maxPageBudget = Math.max(1, Number(health?.deep_research?.max_pages || 4));
+  const minPageBudget = Math.min(2, maxPageBudget);
+
+  useEffect(() => {
+    setPages((current) => Math.min(maxPageBudget, Math.max(minPageBudget, current)));
+  }, [maxPageBudget, minPageBudget]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -1030,6 +1030,7 @@ function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
       const payload = {
         mode,
         url: mode === 'url' ? url.trim() : null,
+        source_urls: sourceUrls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
         topic: mode === 'topic' ? topic.trim() : null,
         competitors: mode === 'compare' ? rivals.split(',').map((c) => c.trim()).filter(Boolean) : [],
         question: question.trim(),
@@ -1053,9 +1054,9 @@ function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
   return (
     <>
       <Masthead
-        eyebrow="Deep research"
-        title="Crawl a site and read it properly"
-        lede="Pages are parsed with their heading structure, values are extracted, and every claim in the report points back to the page it came from."
+        eyebrow="Web research"
+        title="Research any question, site, or paper"
+        lede="Start with a topic, a website, or published sources. Findings stay tied to captured evidence, with citations and unanswered questions made visible."
       />
 
       <section className="panel panel-form">
@@ -1075,7 +1076,7 @@ function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
 
         {!searchLive && (mode === 'topic' || mode === 'compare') && (
           <p className="data-warning" role="status">
-            Web search is off on the API, so topic and comparison runs cannot discover competitor sites. Set
+            Web search is off on the API, so this run can only use the URLs you provide. Set
             <span className="mono"> DEEP_SEARCH_ENABLED=true</span> on the Northflank Environment page and redeploy.
           </p>
         )}
@@ -1083,28 +1084,29 @@ function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
         <form className="form form-grid" onSubmit={submit}>
           {mode === 'url' && (
             <label className="field">
-              <span>Site URL</span>
-              <input required type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://acme.com" />
+              <span>Website or published source URL</span>
+              <input required type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.org/article or a paper PDF" />
+              <small>We’ll read the page, follow relevant links within the crawl budget, and cite captured sources.</small>
             </label>
           )}
 
           {mode === 'topic' && (
             <label className="field">
               <span>Topic</span>
-              <input required value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="AI note-taking app pricing" />
+              <input required value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="How does urban tree cover affect heat and health?" />
             </label>
           )}
 
           {mode === 'compare' && (
             <>
               <label className="field">
-                <span>Subject</span>
-                <input required value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Notion" />
+                <span>Question or subject</span>
+                <input required value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="How do two approaches to drought resilience compare?" />
               </label>
               <label className="field">
-                <span>Competitors</span>
-                <input required value={rivals} onChange={(e) => setRivals(e.target.value)} placeholder="Coda, Obsidian, Anytype" />
-                <small>Comma separated.</small>
+                <span>Other people, organizations, or subjects</span>
+                <input required value={rivals} onChange={(e) => setRivals(e.target.value)} placeholder="Approach A, Approach B" />
+                <small>Comma separated. Comparisons are not limited to companies.</small>
               </label>
             </>
           )}
@@ -1114,27 +1116,33 @@ function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="What does it charge, what limits apply, and what are the trial terms?"
+              placeholder="What does the evidence show, and what are its limitations?"
             />
             <small>Leave empty to let the planner derive its own questions.</small>
+          </label>
+
+          <label className="field field-wide">
+            <span>Source URLs to include (optional)</span>
+            <textarea rows="3" value={sourceUrls} onChange={(e) => setSourceUrls(e.target.value)} placeholder={'Paste one website, paper, or PDF URL per line\nhttps://arxiv.org/pdf/…'} />
+            <small>Use these to ground the research in specific sources. Up to 10 URLs; web search can find additional sources.</small>
           </label>
 
           <div className="field field-wide controls">
             <label className="slider">
               <span>
-                Page budget <strong className="mono">{pages}</strong>
+                Source page budget <strong className="mono">{pages}</strong>
               </span>
-              <input type="range" min="2" max="30" value={pages} onChange={(e) => setPages(Number(e.target.value))} />
+              <input type="range" min={minPageBudget} max={maxPageBudget} value={pages} onChange={(e) => setPages(Number(e.target.value))} />
             </label>
             <label className="check">
               <input type="checkbox" checked={useSearch} onChange={(e) => setUseSearch(e.target.checked)} />
-              <span>Search the web for extra sources</span>
+              <span>Find corroborating sources on the web</span>
             </label>
           </div>
 
           <div className="field-wide">
             <button className={`btn-primary${busy ? ' is-busy' : ''}`} disabled={busy}>
-              {busy ? 'Researching…' : 'Start deep research'}
+              {busy ? 'Researching…' : 'Start research'}
             </button>
             <small className="muted">This run waits on the API. A larger page budget can take several minutes.</small>
           </div>

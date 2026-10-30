@@ -1,12 +1,12 @@
 # AI Competitor Research
 
-**Evidence-backed competitive intelligence across products, prices, regions, and customer reviews — plus a deep research engine and chat grounded in cited page evidence.**
+**Evidence-led web research for any topic, website, or research paper, with cited findings and grounded follow-up chat. Company and product comparison is available as a specialized workflow.**
 
-AI Competitor Research turns a target company and competitor set into a repeatable research workflow:
+Scope Research turns research questions and source links into a repeatable, evidence-first workflow:
 
-**Discover → Region Fan-out → Geo-aware Scrape → Structured Extraction → Validation → Storage → Competitive Insights → Evidence-backed RAG → Reports**
+**Plan → Discover Sources → Fetch Web Pages and PDFs → Extract Evidence → Validate Citations → Synthesize Findings → Grounded Chat → Reports**
 
-It also ships a second, independent path for non-vague research on a **URL, topic, or comparison set**: a budgeted crawler with heading-aware extraction, planned sub-questions, a fully cited Markdown report, explicit research gaps, and chat that answers only from the evidence a run captured. See [Deep Research Engine](#deep-research-engine).
+Company and product comparison remains available as a focused workflow with structured offers, region context, and competitive changes. The general research path handles investigations about arbitrary subjects from a URL, multiple source URLs, or a topic. Its budgeted crawler extracts text from web pages and text-based PDFs, plans sub-questions, produces a cited report, calls out evidence gaps, and grounds follow-up chat in captured sources. See [Deep Research Engine](#deep-research-engine).
 
 The project is designed as an engineering system rather than a simple prompt-based demo. It combines automated discovery, web scraping, structured LLM extraction, validation, evidence retention, persistent storage, cross-run analysis, review intelligence, reporting, and a React/FastAPI application boundary.
 
@@ -14,7 +14,16 @@ The project is designed as an engineering system rather than a simple prompt-bas
 
 # What the Application Does
 
-The application is built to answer questions such as:
+The research workspace is built to answer questions such as:
+
+- What does the evidence say about a scientific, historical, policy, or technical question?
+- What methods, findings, limitations, and disagreements appear in the sources?
+- What does a selected website or paper actually say, and where is each claim supported?
+- Which facts are established, uncertain, or missing from the captured evidence?
+- How do named organizations or products compare on a question the researcher chooses?
+- Can the findings be exported into a cited report?
+
+The specialized company-comparison workflow can also answer questions such as:
 
 - What products or commercial offerings does a company currently expose?
 - What prices and currencies are shown?

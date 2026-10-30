@@ -32,7 +32,7 @@ from app.storage.documents import tokenize
 logger = logging.getLogger(__name__)
 
 _SYNTH_SYSTEM = (
-    "You write evidence-backed competitive-intelligence briefs. Use ONLY the "
+    "You write evidence-backed research reports for any subject. Use ONLY the "
     "evidence given. Cite every claim with its source marker, e.g. [S2]. "
     "If the evidence does not answer part of the question, say so plainly "
     "instead of guessing. Plain prose or short markdown bullets, no preamble."

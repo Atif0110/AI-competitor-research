@@ -51,6 +51,7 @@ class ReviewQueryRequest(BaseModel):
 class DeepResearchRequest(BaseModel):
     mode: str = Field(default="url", pattern=r"^(url|topic|compare)$")
     url: Optional[str] = Field(default=None, max_length=2048)
+    source_urls: list[Annotated[str, Field(min_length=4, max_length=2048)]] = Field(default_factory=list, max_length=10)
     topic: Optional[str] = Field(default=None, max_length=200)
     company: Optional[str] = Field(default=None, max_length=200)
     competitors: list[Annotated[str, Field(min_length=1, max_length=150)]] = Field(default_factory=list, max_length=10)
@@ -71,6 +72,20 @@ class DeepResearchRequest(BaseModel):
                 raise ValueError("url must be a public HTTP(S) URL without credentials or a custom port")
             return candidate
         return value
+
+    @field_validator("source_urls")
+    @classmethod
+    def validate_public_source_urls(cls, values):
+        normalized = []
+        for value in values:
+            candidate = value.strip()
+            if "://" not in candidate:
+                candidate = "https://" + candidate
+            if not is_public_http_url(candidate):
+                raise ValueError("each source URL must be a public HTTP(S) URL without credentials or a custom port")
+            if candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
 
 
 class ChatRequest(BaseModel):
@@ -511,6 +526,7 @@ def create_app():
             max_depth=payload.max_depth if payload.max_depth else None,
             use_search=payload.use_search,
             use_llm=payload.use_llm,
+            extra_seeds=payload.source_urls,
         )
         try:
             result = _deep_pipeline().run(request)

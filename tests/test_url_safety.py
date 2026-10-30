@@ -50,6 +50,25 @@ def test_deep_research_private_url_rejected(url):
         DeepResearchRequest(mode="url", url=url)
 
 
+def test_deep_research_source_urls_are_normalized_and_public_only():
+    request = DeepResearchRequest(
+        mode="url",
+        url="https://example.org",
+        source_urls=["arxiv.org/pdf/1234.5678.pdf", "https://example.org/paper.pdf"],
+    )
+    assert request.source_urls == [
+        "https://arxiv.org/pdf/1234.5678.pdf",
+        "https://example.org/paper.pdf",
+    ]
+
+    with pytest.raises(ValidationError):
+        DeepResearchRequest(
+            mode="url",
+            url="https://example.org",
+            source_urls=["http://169.254.169.254/latest/meta-data/"],
+        )
+
+
 def test_safe_get_blocks_private_redirect(monkeypatch):
     class Response:
         is_redirect = True

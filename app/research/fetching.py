@@ -40,7 +40,7 @@ _SKIP_SCHEMES = {"mailto", "tel", "javascript", "data", "sms", "ftp", "file"}
 
 _ASSET_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".css", ".js",
-    ".json", ".xml", ".pdf", ".zip", ".gz", ".mp4", ".webm", ".mp3", ".woff",
+    ".json", ".xml", ".zip", ".gz", ".mp4", ".webm", ".mp3", ".woff",
     ".woff2", ".ttf", ".eot", ".dmg", ".exe", ".csv", ".xlsx", ".docx",
 }
 
@@ -61,6 +61,7 @@ class FetchResult:
     proxy_used: Optional[str] = None
     error: Optional[str] = None
     scraper: str = "http"
+    body: bytes = b""
 
 
 @dataclass
@@ -563,10 +564,24 @@ class Fetcher:
                 continue
 
             if "html" not in content_type.lower() and "xml" not in content_type.lower():
+                pdf_bytes = b""
+                is_pdf = (
+                    "pdf" in content_type.lower()
+                    or urlparse(final_url).path.lower().endswith(".pdf")
+                    or response.content.startswith(b"%PDF-")
+                )
+                if is_pdf:
+                    pdf_bytes = response.content
+                    if len(pdf_bytes) > 20 * 1024 * 1024:
+                        return FetchResult(
+                            url=url, ok=False, status=response.status_code, final_url=final_url,
+                            content_type=content_type, error="PDF exceeds the 20 MB research limit",
+                            proxy_used=proxy, elapsed_ms=int((time.monotonic() - started) * 1000),
+                        )
                 return FetchResult(
                     url=url, ok=True, status=response.status_code, final_url=final_url,
                     content_type=content_type, proxy_used=proxy, scraper="http",
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    elapsed_ms=int((time.monotonic() - started) * 1000), body=pdf_bytes,
                 )
 
             return FetchResult(

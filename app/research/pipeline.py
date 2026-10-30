@@ -148,16 +148,10 @@ class DeepResearchPipeline:
 
         try:
             seed_urls = list(plan.seed_urls)
-            if request.mode == ResearchMode.compare:
-                # Search provides verified competitor URLs; guessing a
-                # hostname from a display name creates noisy failures.
-                if search.available:
-                    seed_urls.extend(self._search_seeds(search, plan, limit=6))
-
-            if request.use_search and search.available and (
-                request.mode != ResearchMode.url or not seed_urls
-            ):
-                seed_urls.extend(self._search_seeds(search, plan))
+            if request.use_search and search.available:
+                # Search can add corroborating sources for URL research too;
+                # explicit source URLs remain in the seed set alongside them.
+                seed_urls.extend(self._search_seeds(search, plan, limit=6))
 
             external_seeds = {
                 urlparse(url).netloc.lower()

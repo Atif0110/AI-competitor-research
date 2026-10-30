@@ -23,12 +23,15 @@ from app.storage.documents import tokenize
 logger = logging.getLogger(__name__)
 
 _SYSTEM = (
-    "You are a research planner for a competitive-intelligence system. Given a "
-    "research objective, produce a concrete plan. Reply with JSON only:\n"
+    "You are a general web-research planner. Research may concern any field, "
+    "including science, technology, health, public policy, history, culture, "
+    "organizations, products, or markets. Given a research objective, produce "
+    "a concrete evidence-gathering plan. Reply with JSON only:\n"
     '{"objective": str, "subject": str, "sub_questions": [str], '
     '"search_queries": [str], "keywords": [str], "page_types": [str]}.\n'
-    "Rules: sub_questions are specific and answerable from web pages (4-8 of "
-    "them, each answerable with a number, name, limit or feature). "
+    "Rules: sub_questions are specific, balanced, and answerable from web pages "
+    "(4-8 of them). Prioritize the user's question. Do not force a product, "
+    "pricing, or competitor framing unless the objective asks for it. "
     "search_queries are short keyword queries a search engine would accept. "
     "keywords are lowercase single terms worth matching in page text. "
     "page_types must come from: product, pricing, review, docs, company, "
@@ -39,24 +42,27 @@ _SYSTEM = (
 _PAGE_TYPES = {t.value for t in PageType}
 
 _COMMON_PAGE_TYPES = [
+    PageType.article,
+    PageType.other,
+    PageType.docs,
     PageType.company,
+    PageType.comparison,
+    PageType.review,
     PageType.product,
     PageType.pricing,
-    PageType.review,
-    PageType.docs,
-    PageType.comparison,
     PageType.listing,
+    PageType.legal,
 ]
 
-_QUESTION_STEMS = [
-    "What does {subject} actually sell, and to whom?",
-    "What are the current prices, plans and limits?",
-    "Which features differentiate {subject} from its alternatives?",
-    "What do customers complain about, and what do they praise?",
-    "What are the terms, guarantees, limits and support commitments?",
-    "What integrations, platform support and compliance are offered?",
-    "How large is the company and who are its main competitors?",
-    "What changed recently: launches, pricing moves or policy updates?",
+_GENERAL_QUESTIONS = [
+    "What is the central question, claim, or issue being investigated?",
+    "What are the main findings or conclusions reported by the sources?",
+    "What evidence, data, methods, or reasoning support those findings?",
+    "Where do credible sources agree, and where do they disagree?",
+    "What limitations, uncertainty, or missing evidence should be considered?",
+    "What context, causes, or mechanisms help explain the findings?",
+    "What has changed over time, and what is the most recent evidence?",
+    "What practical implications or open questions follow from the evidence?",
 ]
 
 
@@ -149,7 +155,17 @@ def build_plan(
         plan.search_queries = _deterministic_queries(plan.subject, objective, plan.keywords)
     elif not plan.search_queries and request.mode == ResearchMode.compare:
         plan.search_queries = _clean_list(
-            [f"{plan.subject} {competitor} comparison" for competitor in request.competitors[:5]],
+            [f"{plan.subject} {competitor} {objective}" for competitor in request.competitors[:5]],
+            6,
+        )
+    elif not plan.search_queries and request.mode == ResearchMode.url:
+        host = urlparse(request.url or "").netloc
+        plan.search_queries = _clean_list(
+            [
+                f"{host} {request.question}" if request.question else f"{host} background",
+                request.question,
+                f"{plan.subject} research and context",
+            ],
             6,
         )
     return plan
@@ -246,15 +262,20 @@ def _parse_plan_json(raw: str):
 
 
 def _deterministic_sub_questions(subject: str, objective: str, request: ResearchRequest) -> List[str]:
-    questions = [
-        stem.format(subject=subject or "the subject")
-        for stem in _QUESTION_STEMS
-    ]
-    if request.competitors:
-        for competitor in request.competitors[:3]:
-            questions.append(
-                f"How does {competitor} compare with {subject or 'the target'} on price, features and positioning?"
-            )
+    if request.mode == ResearchMode.compare or request.competitors:
+        questions = [
+            "What is the main question and what evidence is available for each subject?",
+            "What are the most important similarities and differences?",
+            "Which claims are supported by strong evidence, and which remain uncertain?",
+            "What limitations or source gaps affect the comparison?",
+            "What has changed recently that could affect the comparison?",
+        ]
+        questions.extend(
+            f"How does {competitor} compare with {subject or 'the subject'} on the stated research question?"
+            for competitor in request.competitors[:3]
+        )
+    else:
+        questions = list(_GENERAL_QUESTIONS)
     if objective and objective.lower() not in {q.lower() for q in questions}:
         questions.insert(0, objective)
     return questions[:8]
@@ -262,12 +283,16 @@ def _deterministic_sub_questions(subject: str, objective: str, request: Research
 
 def _deterministic_queries(subject: str, objective: str, keywords: List[str]) -> List[str]:
     base = [w for w in re.findall(r"[A-Za-z0-9+.\-']{2,}", objective)][:8]
+    query_terms = [word for word in base if word.lower() not in {
+        "what", "which", "where", "when", "does", "do", "did", "the", "and", "for", "from", "with", "about", "should", "could", "would",
+    }]
     queries = []
     if subject:
         queries.append(subject)
-    if base:
-        queries.append(" ".join(base[:6]))
+    if query_terms:
+        queries.append(" ".join(query_terms[:6]))
     if keywords:
-        queries.append(" ".join(keywords[:4]) + " review")
-    queries.append(f"{subject} pricing" if subject else objective[:60])
+        queries.append(" ".join(keywords[:5]) + " evidence")
+    if subject:
+        queries.append(f"{subject} research findings")
     return _clean_list(queries, 6)
