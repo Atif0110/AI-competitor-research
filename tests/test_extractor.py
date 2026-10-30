@@ -93,7 +93,7 @@ def test_corrective_retry_receives_validation_error():
             self.users.append(user)
             if len(self.users) == 1:
                 return json.dumps({"price": 10.0, "currency": "RUB"})  # invalid currency
-            return json.dumps({"product_name": "Pro X Headphones", "price": 10.0,
+            return json.dumps({"product_name": "Pro X Headphones", "price": 499.0,
                                "currency": "USD", "region": "US", "url": "u"})
 
     settings.llm_provider = "demo"
@@ -190,3 +190,53 @@ def test_explicit_free_plan_is_accepted_but_free_trial_is_not_zero_price():
     )
     assert not free_trial.ok
     assert "Zero price" in free_trial.error
+
+
+def test_rejects_model_price_not_present_as_an_exact_amount():
+    class WrongPriceClient:
+        provider_name = "test"
+
+        def complete(self, system, user):
+            return json.dumps({
+                "product_name": "Pro X Headphones", "price": 999, "currency": "INR",
+                "region": "IN", "url": "https://shop.example/products/pro-x-headphones",
+            })
+
+    result = StructuredExtractor(WrongPriceClient()).extract(
+        "# Pro X Headphones\nPrice: ₹899\nCurrency: INR\n",
+        "https://shop.example/products/pro-x-headphones",
+    )
+    assert not result.ok
+    assert "price" in (result.error or "").lower()
+
+
+def test_rejects_recommended_product_misattributed_to_page_url():
+    class RelatedProductClient:
+        provider_name = "test"
+
+        def complete(self, system, user):
+            return json.dumps({
+                "product_name": "EnergyShroom PB200 Power Bank", "price": 1199,
+                "currency": "INR", "region": "IN",
+                "url": "https://www.boat-lifestyle.com/products/aux-500",
+            })
+
+    result = StructuredExtractor(RelatedProductClient()).extract(
+        "# boAt AUX 500\nRecommended: EnergyShroom PB200 Power Bank\n"
+        "Price: ₹1,199\nCurrency: INR\nAdd to cart",
+        "https://www.boat-lifestyle.com/products/aux-500",
+        focus_products=["Airdopes"],
+    )
+    assert result.skipped
+    assert not result.ok
+    assert "product name is not supported" in (result.error or "")
+
+
+def test_opaque_product_url_can_use_primary_page_heading_as_identity_evidence():
+    from app.focus import product_identity_matches_source
+
+    assert product_identity_matches_source(
+        "Pro X Headphones",
+        "https://shop.example/products/123456",
+        "# Pro X Headphones\nPrice: $499.00",
+    )

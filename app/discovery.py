@@ -27,6 +27,7 @@ from typing import Iterable, List
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
+from app.focus import category_aliases
 from app.url_safety import is_public_http_url, safe_http_get
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,12 @@ def _focus_score(url: str, focus_products: Iterable[str]) -> int:
         compact = "-".join(focus_tokens)
         if compact and compact in path:
             score += 1000
+    # Category aliases let equivalent rival products rank well (Airdopes vs
+    # Noise earbuds, Galaxy vs iPhone) without treating an unrelated product
+    # as a match.
+    aliases = category_aliases(focus_products)
+    if any(set(re.findall(r"[a-z0-9]+", alias.lower())).issubset(tokens) for alias in aliases):
+        score += 2200
     return score
 
 

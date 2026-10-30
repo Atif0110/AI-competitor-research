@@ -1,4 +1,7 @@
 from app import discovery
+from app.focus import discovery_focus_terms, focus_matches_offer
+from app.orchestrator import Pipeline
+from app.schemas import CompetitorTarget, Currency, ProductOffer, Region
 
 
 def test_focus_match_ranks_product_pages_above_seed_homepage():
@@ -58,3 +61,56 @@ def test_site_search_keeps_only_public_pages_from_requested_company(monkeypatch)
     )
 
     assert found == ["https://shop.example.com/products/airdopes"]
+
+
+def test_a_brand_specific_focus_maps_to_category_for_rival_and_filters_accessories():
+    rival_focus = discovery_focus_terms(["Airdopes"], competitor=True)
+    assert "earbuds" in rival_focus
+    urls = [
+        "https://www.gonoise.com/products/noise-air-buds-pro-se-earbuds",
+        "https://www.boat-lifestyle.com/products/aux-500",
+        "https://www.boat-lifestyle.com/products/pb-200",
+    ]
+
+    selected = Pipeline._focus_filter(urls, rival_focus)
+
+    assert selected == [urls[0]]
+    assert focus_matches_offer("Noise Air Buds Pro SE Earbuds", None, urls[0], rival_focus)
+    assert not focus_matches_offer("EnergyShroom PB200 Power Bank", None, urls[1], ["Airdopes"], allow_category_fallback=False)
+
+
+def test_offer_validation_rejects_off_focus_primary_and_accepts_rival_equivalent():
+    target = CompetitorTarget(
+        company="boAt",
+        website="https://www.boat-lifestyle.com",
+        focus_products=["Airdopes"],
+    )
+    offer = ProductOffer(
+        product_name="EnergyShroom PB200 Power Bank",
+        price=1199,
+        currency=Currency.INR,
+        region=Region.IN,
+        url="https://www.boat-lifestyle.com/products/aux-500",
+    )
+    assert not Pipeline._offer_matches_target(
+        offer, offer.url, "boAt", target
+    )
+
+    rival_offer = ProductOffer(
+        product_name="Noise Air Buds Pro SE Earbuds",
+        price=1299,
+        currency=Currency.INR,
+        region=Region.IN,
+        url="https://www.gonoise.com/products/noise-air-buds-pro-se-earbuds",
+    )
+    assert Pipeline._offer_matches_target(
+        rival_offer, rival_offer.url, "Noise", target
+    )
+
+
+def test_phone_series_focus_matches_model_variants_and_maps_to_rival_phones():
+    from app.focus import focus_matches
+
+    focus = ["Galaxy S series"]
+    assert focus_matches("/in/smartphones/galaxy-s25-ultra", focus, allow_category_fallback=False)
+    assert "iphone" in discovery_focus_terms(focus, competitor=True)

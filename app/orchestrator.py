@@ -32,6 +32,7 @@ from typing import Callable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from app.analysis.currency import normalize_price
+from app.focus import discovery_focus_terms, focus_categories, focus_matches_offer
 from app.analysis.insights import InsightsEngine
 from app.config import settings
 from app.discovery import canonical_url, dedupe_urls, discover_urls_for_entity
@@ -242,10 +243,13 @@ class Pipeline:
                 if demo:
                     found = product_urls_for(ent.name, target.regions)
                 else:
-                    # Focus describes the primary company. Competitors are
-                    # searched independently so a Samsung model hint cannot
-                    # accidentally filter Apple or another rival.
-                    focus = target.focus_products if entity_index == 0 else []
+                    # Keep the requested focus for the primary company. For
+                    # rivals, translate known product names into their broad
+                    # category (e.g. Airdopes -> earbuds; Galaxy S -> phones).
+                    focus = discovery_focus_terms(
+                        target.focus_products,
+                        competitor=entity_index != 0,
+                    )
                     found = discover_urls_for_entity(ent.website, focus_products=focus)
                     # Keep enough candidates to preserve pricing and product
                     # coverage while bounding later regional fan-out.
@@ -279,20 +283,22 @@ class Pipeline:
         entity_order = {ent.name: index for index, ent in enumerate(entities)}
         candidates_by_entity.sort(key=lambda pair: entity_order.get(pair[0].name, 0))
 
-        # A focus product is a ranking hint, not a hard requirement: URL paths
-        # often use product slugs/collections that differ from the user's
-        # wording. Keep the focused candidates when they match. If they do not,
-        # try just the top-ranked URL for that company rather than turning a
-        # valid research request into a zero-page run.
+        # Focus matching is applied independently to each company. If URL
+        # wording differs, use a bounded fallback and validate the extracted
+        # offer against the focus before saving it.
         page_limit = max(1, min(settings.competitive_pages_per_entity, 8))
         for entity_index, (entity, candidates) in enumerate(candidates_by_entity):
-            filtered = self._focus_filter(candidates, target) if entity_index == 0 else candidates
+            entity_focus = discovery_focus_terms(
+                target.focus_products,
+                competitor=entity_index != 0,
+            )
+            filtered = self._focus_filter(candidates, entity_focus)
             if filtered is None and candidates:
                 fallback = candidates[:page_limit]
                 urls.extend(fallback)
                 focus = ", ".join(target.focus_products[:3])
                 errors.append(
-                    f"focus search: no URL path directly matched {focus!r} for {entity.name}; "
+                    f"focus search: no URL path matched {focus!r} or its product category for {entity.name}; "
                     f"checking the {len(fallback)} highest-ranked product, pricing, and search-result pages."
                 )
             elif filtered:
@@ -308,9 +314,30 @@ class Pipeline:
         return urls, errors
 
     @staticmethod
+    def _offer_matches_target(
+        offer: ProductOffer,
+        url: str,
+        company: Optional[str],
+        target: CompetitorTarget,
+    ) -> bool:
+        # Unknown/custom focus phrases stay advisory; known categories are
+        # enforced deterministically to prevent cross-category offers.
+        if not target.focus_products or not focus_categories(target.focus_products):
+            return True
+        is_competitor = company is not None and company != target.company
+        focus = discovery_focus_terms(target.focus_products, competitor=is_competitor)
+        return focus_matches_offer(
+            offer.product_name,
+            offer.listing_title,
+            url,
+            focus,
+            allow_category_fallback=is_competitor,
+        )
+
+    @staticmethod
     def _focus_filter(
         urls: List[str],
-        target: CompetitorTarget,
+        focus_products: CompetitorTarget | List[str] | tuple[str, ...],
     ) -> Optional[List[str]]:
         """Keep URLs whose PATH mentions a focus product.
 
@@ -320,30 +347,13 @@ class Pipeline:
         Returns None when focus_products match nothing.
         """
 
-        if not target.focus_products:
+        if isinstance(focus_products, CompetitorTarget):
+            focus_products = focus_products.focus_products
+        if not focus_products:
             return urls
 
-        patterns: List[str] = []
-
-        for product in target.focus_products:
-            patterns.append(
-                re.escape(
-                    product.lower().replace(
-                        " ",
-                        "-",
-                    )
-                )
-            )
-
-            for token in product.lower().split():
-                if len(token) > 2:
-                    patterns.append(
-                        r"(?<![a-z0-9])"
-                        + re.escape(token)
-                        + r"(?![a-z0-9])"
-                    )
-
-        keep = []
+        exact_matches = []
+        category_matches = []
         pricing_pages = []
 
         for url in urls:
@@ -357,12 +367,15 @@ class Pipeline:
                 # pages required for the price-comparison workflow.
                 pricing_pages.append(url)
 
-            if any(
-                re.search(pattern, path)
-                for pattern in patterns
-            ):
-                keep.append(url)
+            if focus_matches_offer("", None, path, focus_products, allow_category_fallback=False):
+                exact_matches.append(url)
+            elif focus_matches_offer("", None, path, focus_products):
+                category_matches.append(url)
 
+        # Prefer exact model/series path matches whenever present. Category
+        # equivalents are useful for rival discovery or when a site uses a
+        # different product slug, but should not dilute exact primary results.
+        keep = exact_matches or category_matches
         keep = list(dict.fromkeys(pricing_pages + keep))
 
         if not keep:
@@ -671,13 +684,25 @@ class Pipeline:
                 entities,
             )
 
+            is_competitor = competitor is not None and competitor != target.company
+            offer_focus = discovery_focus_terms(target.focus_products, competitor=is_competitor)
+
             result = self.extractor.extract(
                 page.markdown,
                 url,
                 expected_region=Region(
                     region
                 ),
+                focus_products=offer_focus,
             )
+
+            if result.ok and result.offer and not self._offer_matches_target(
+                result.offer, url, competitor, target
+            ):
+                result.ok = False
+                result.offer = None
+                result.skipped = True
+                result.error = "Extracted product does not match the requested product/category"
 
             stats.extraction_attempts += (
                 result.attempts

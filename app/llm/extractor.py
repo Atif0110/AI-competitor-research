@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
+from app.focus import product_identity_matches_source
 from app.llm.client import LLMClient
 from app.schemas import ProductOffer, Region, Review
 
@@ -145,6 +146,7 @@ Rules:
         url: str,
         *,
         expected_region: Region | str | None = None,
+        focus_products: tuple[str, ...] | list[str] = (),
     ) -> ExtractionResult:
         """
         Extract one ProductOffer from page content.
@@ -177,6 +179,7 @@ Rules:
             content=content,
             url=url,
             expected_region=expected_region_value,
+            focus_products=focus_products,
         )
 
         # Keep extraction conservative because provider quotas are often
@@ -230,6 +233,16 @@ Rules:
                         "Model output could not be validated as ProductOffer"
                     )
 
+                if not product_identity_matches_source(offer.product_name, url, content):
+                    return ExtractionResult(
+                        ok=False,
+                        offer=None,
+                        confidence=0.0,
+                        error="Extracted product name is not supported by this page's URL or primary content",
+                        attempts=attempts,
+                        skipped=True,
+                    )
+
                 # IMPORTANT:
                 # Compare the model's original region BEFORE changing it.
                 model_region = self._region_value(
@@ -247,9 +260,11 @@ Rules:
                         expected_region_value
                     )
 
-                if offer.price == 0 and not self._price_is_evidenced(content, offer):
+                if not self._price_is_evidenced(content, offer):
                     raise ValueError(
                         "Zero price was returned without explicit free-plan evidence"
+                        if offer.price == 0
+                        else "Extracted price is not supported by exact amount and currency evidence"
                     )
 
                 confidence = self._confidence(
@@ -318,8 +333,10 @@ Rules:
         content: str,
         url: str,
         expected_region: str | None,
+        focus_products: tuple[str, ...] | list[str] = (),
     ) -> str:
         region_text = expected_region or "Unknown"
+        focus_text = ", ".join(str(value) for value in focus_products) or "None"
 
         content_budget = max(
             2000,
@@ -339,10 +356,17 @@ SOURCE URL:
 EXPECTED REGION:
 {region_text}
 
+REQUESTED PRODUCT OR CATEGORY:
+{focus_text}
+
 PAGE CONTENT (relevant excerpt):
 {compact_content}
 
 Return JSON only.
+
+Extract the page's primary product offer, not a related/recommended product elsewhere in the page.
+The exact numeric price and product identity must both be supported by this source.
+When a requested product/category is provided, only return an offer in that category.
 
 If this is not a commercial product/offer page, return:
 {{"skip": true}}
@@ -539,6 +563,30 @@ Never invent a price or other product information.
         )
 
         if not pricing_language:
+            return False
+
+        # Require the model's exact amount to appear in the source. Currency
+        # and pricing words elsewhere on a template are not sufficient evidence.
+        try:
+            from decimal import Decimal, InvalidOperation
+
+            expected_amount = Decimal(str(offer.price)).quantize(Decimal("0.01"))
+            amount_found = False
+            for match in re.finditer(
+                r"(?<![a-z0-9])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?![a-z0-9])",
+                text,
+                re.IGNORECASE,
+            ):
+                try:
+                    observed = Decimal(match.group(0).replace(",", "")).quantize(Decimal("0.01"))
+                except InvalidOperation:
+                    continue
+                if observed == expected_amount:
+                    amount_found = True
+                    break
+            if not amount_found:
+                return False
+        except Exception:
             return False
 
         # Extremely small prices need exact numeric evidence.

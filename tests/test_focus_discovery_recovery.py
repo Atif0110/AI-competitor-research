@@ -2,6 +2,7 @@ import threading
 import time
 
 from app import orchestrator
+from app.focus import discovery_focus_terms
 from app.orchestrator import Pipeline
 from app.schemas import Competitor, CompetitorTarget
 
@@ -12,7 +13,7 @@ def _pipeline():
     return pipeline
 
 
-def test_focus_miss_uses_multiple_ranked_pages_and_does_not_filter_competitor(monkeypatch):
+def test_focus_filter_prefers_category_pages_and_bounds_rival_fallback(monkeypatch):
     pages = {
         "https://acme.example": [
             "https://acme.example/products/earbuds",
@@ -36,13 +37,11 @@ def test_focus_miss_uses_multiple_ranked_pages_and_does_not_filter_competitor(mo
 
     assert urls == [
         "https://acme.example/products/earbuds",
-        "https://acme.example/collections/audio",
-        "https://acme.example/products/overear",
         "https://rival.example/catalog/audio",
         "https://rival.example/products/speakers",
     ]
     assert len(notes) == 1
-    assert "highest-ranked product" in notes[0]
+    assert "no URL path matched" in notes[0]
 
 
 def test_focus_match_keeps_matching_and_pricing_candidates(monkeypatch):
@@ -69,7 +68,7 @@ def test_focus_match_keeps_matching_and_pricing_candidates(monkeypatch):
     assert notes == []
 
 
-def test_focus_hint_is_sent_only_for_the_primary_company(monkeypatch):
+def test_focus_hint_is_translated_to_category_for_competitors(monkeypatch):
     observed = {}
 
     def discover(website, focus_products=()):
@@ -88,8 +87,9 @@ def test_focus_hint_is_sent_only_for_the_primary_company(monkeypatch):
 
     assert observed == {
         "https://samsung.example": ["Galaxy S"],
-        "https://apple.example": [],
+        "https://apple.example": list(discovery_focus_terms(["Galaxy S"], competitor=True)),
     }
+    assert "iphone" in observed["https://apple.example"]
 
 
 def test_empty_discovery_reports_website_problem_not_focus_mismatch(monkeypatch):
