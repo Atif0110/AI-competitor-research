@@ -17,7 +17,7 @@ from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 from app.analysis.insights import InsightsEngine
 from app.config import settings
@@ -26,6 +26,7 @@ from app.schemas import Competitor, CompetitorTarget, PipelineResult, Region
 from app.storage.db import OfferStore
 from app.storage.vector import ReviewStore
 from app.util import is_safe_run_id, parse_region
+from app.url_safety import is_public_http_url
 
 logger = logging.getLogger(__name__)
 _store = OfferStore()
@@ -57,6 +58,18 @@ class DeepResearchRequest(BaseModel):
     max_depth: int = Field(default=0, ge=0, le=4)
     use_search: bool = True
     use_llm: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def validate_public_url(cls, value):
+        if value is not None:
+            candidate = value.strip()
+            if "://" not in candidate:
+                candidate = "https://" + candidate
+            if not is_public_http_url(candidate):
+                raise ValueError("url must be a public HTTP(S) URL without credentials or a custom port")
+            return candidate
+        return value
 
 
 class ChatRequest(BaseModel):

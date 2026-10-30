@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.url_safety import is_public_http_url
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -43,7 +45,10 @@ class Competitor(BaseModel):
         v = v.strip()
         if not v.startswith(("http://", "https://")):
             v = "https://" + v
-        return v.rstrip("/")
+        v = v.rstrip("/")
+        if not is_public_http_url(v):
+            raise ValueError("website must be a public HTTP(S) URL without credentials or a custom port")
+        return v
 
 
 class CompetitorTarget(BaseModel):
@@ -62,7 +67,10 @@ class CompetitorTarget(BaseModel):
         v = v.strip()
         if not v.startswith(("http://", "https://")):
             v = "https://" + v
-        return v.rstrip("/")
+        v = v.rstrip("/")
+        if not is_public_http_url(v):
+            raise ValueError("website must be a public HTTP(S) URL without credentials or a custom port")
+        return v
 
     def all_entities(self) -> List[Competitor]:
         return [Competitor(name=self.company, website=self.website)] + list(self.competitors)

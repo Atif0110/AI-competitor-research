@@ -41,3 +41,19 @@ def test_private_workspace_still_requires_api_key(monkeypatch):
     with pytest.raises(HTTPException) as error:
         _require_api_key(None)
     assert error.value.status_code == 401
+
+
+def test_public_research_rejects_private_network_targets(monkeypatch):
+    monkeypatch.setattr(settings, "public_workspace_mode", True)
+    monkeypatch.setattr(settings, "api_key_required", True)
+    client = TestClient(app)
+    response = client.post("/research/jobs", json={
+        "company": "Internal service",
+        "website": "http://127.0.0.1/admin",
+    })
+    assert response.status_code == 422
+
+    deep = client.post("/research/deep", json={
+        "mode": "url", "url": "http://169.254.169.254/latest/meta-data/",
+    })
+    assert deep.status_code == 422

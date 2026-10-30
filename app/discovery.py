@@ -26,6 +26,7 @@ from typing import Iterable, List
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
+from app.url_safety import safe_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -467,13 +468,12 @@ def _resolve_allowed_hosts(
     try:
         import requests
 
-        response = requests.get(
+        response = safe_http_get(
             website,
             timeout=settings.request_timeout_seconds,
             headers={
                 "User-Agent": "cintel-research/1.0",
             },
-            allow_redirects=True,
         )
 
         final_host = _hostname(
@@ -637,7 +637,7 @@ def _fetch(url: str) -> str:
     """Fetch a URL and return its text."""
     import requests
 
-    response = requests.get(
+    response = safe_http_get(
         url,
         timeout=settings.request_timeout_seconds,
         headers={

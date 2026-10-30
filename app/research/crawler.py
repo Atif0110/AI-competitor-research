@@ -32,6 +32,7 @@ from app.research.fetching import (
 )
 from app.research.models import PageDocument, PageType, ResearchPlan
 from app.research.url_discovery import discover_urls_for_host
+from app.url_safety import is_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,8 @@ class Crawler:
             return urlparse(url).netloc.lower()
 
         def enqueue(url: str, depth: int, priority_bonus: float = 0.0) -> None:
+            if settings.public_workspace_mode and not is_public_http_url(url):
+                return
             key = _dedupe_key(url)
             if not key or key in seen:
                 return

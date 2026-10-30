@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from .base import BaseScraper, ScrapeError, ScrapedPage
+from app.url_safety import safe_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,10 @@ class BasicScraper(BaseScraper):
                     region: Optional[str] = None) -> ScrapedPage:
         import requests
 
+
         proxies = {"http": proxy, "https": proxy} if proxy else None
         try:
-            resp = requests.get(url, headers=_HEADERS, timeout=self._timeout(), proxies=proxies)
+            resp = safe_http_get(url, headers=_HEADERS, timeout=self._timeout(), proxies=proxies)
         except requests.RequestException as e:
             raise ScrapeError(f"request failed: {e}") from e
         if resp.status_code >= 400:

@@ -27,6 +27,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 from app.config import settings
 from app.scrapers.base import ProxyPool
+from app.url_safety import is_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -441,10 +442,13 @@ class RobotsGate:
         import requests
 
         try:
+            if not is_public_http_url(f"{origin}/robots.txt"):
+                return None
             response = requests.get(
                 f"{origin}/robots.txt",
                 headers={"User-Agent": self.user_agent},
                 timeout=10,
+                allow_redirects=False,
             )
         except Exception:
             logger.debug("robots.txt unreachable for %s", origin, exc_info=True)
@@ -507,6 +511,8 @@ class Fetcher:
             self._last_hit[host] = time.monotonic()
 
     def fetch(self, url: str, region: Optional[str] = None) -> FetchResult:
+        if settings.public_workspace_mode and not is_public_http_url(url):
+            return FetchResult(url=url, ok=False, status=None, error="blocked non-public or invalid URL")
         host = urlparse(url).netloc
         if not self.robots.allowed(url, self._session):
             return FetchResult(url=url, ok=False, status=None, error="blocked by robots.txt")
@@ -523,7 +529,7 @@ class Fetcher:
                     url,
                     timeout=self.timeout,
                     proxies=proxies,
-                    allow_redirects=True,
+                    allow_redirects=False,
                 )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -533,6 +539,20 @@ class Fetcher:
 
             content_type = response.headers.get("Content-Type", "")
             final_url = str(response.url)
+
+            if response.is_redirect or response.is_permanent_redirect:
+                location = response.headers.get("Location", "")
+                redirect_url = urljoin(url, location)
+                if settings.public_workspace_mode and not is_public_http_url(redirect_url):
+                    last_error = "blocked redirect to non-public or invalid URL"
+                    break
+                if attempt < max(1, self.max_retries):
+                    # Follow only after validating each hop; the next request
+                    # uses the validated destination and disallows redirects.
+                    url = redirect_url
+                    continue
+                last_error = "too many redirects"
+                break
 
             if response.status_code >= 400:
                 last_error = f"http {response.status_code}"

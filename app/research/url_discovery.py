@@ -20,6 +20,7 @@ import requests
 from app.config import settings
 from app.research.fetching import Fetcher, _USER_AGENT
 from app.research.sources import SearchBackend, build_search
+from app.url_safety import is_public_http_url, safe_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -191,11 +192,10 @@ def fetch_sitemap_urls(base_url: str, fetcher: Optional[object] = None, max_urls
     for path in SITEMAP_PATHS:
         try:
             url = urljoin(base_url.rstrip("/") + "/", path)
-            response = requests.get(
+            response = safe_http_get(
                 url,
                 headers={"User-Agent": "AICompetitorResearch/5.0"},
                 timeout=15,
-                allow_redirects=True,
             )
             if response.status_code == 200 and response.text:
                 urls = _parse_sitemap(response.text, max_urls)
@@ -209,7 +209,7 @@ def fetch_sitemap_urls(base_url: str, fetcher: Optional[object] = None, max_urls
     # Try robots.txt for sitemap reference
     try:
         robots_url = urljoin(base_url.rstrip("/") + "/", "/robots.txt")
-        response = requests.get(
+        response = safe_http_get(
             robots_url,
             headers={"User-Agent": "AICompetitorResearch/5.0"},
             timeout=10,
@@ -221,7 +221,7 @@ def fetch_sitemap_urls(base_url: str, fetcher: Optional[object] = None, max_urls
                     sitemap_url = line.split(":", 1)[1].strip()
                     if sitemap_url:
                         try:
-                            response = requests.get(
+                            response = safe_http_get(
                                 sitemap_url,
                                 headers={"User-Agent": "AICompetitorResearch/5.0"},
                                 timeout=15,
@@ -282,7 +282,7 @@ def discover_urls_for_host(base_url: str, max_urls: int = 100) -> List[str]:
     seen = set()
     unique_urls = []
     for url in urls:
-        if url not in urls:
+        if url not in seen and is_public_http_url(url):
             seen.add(url)
             unique_urls.append(url)
             if len(unique_urls) >= max_urls:

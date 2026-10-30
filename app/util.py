@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-
 from app.schemas import Region
 
 VALID_RUN_ID = re.compile(r"^[A-Za-z0-9_-]+$")
