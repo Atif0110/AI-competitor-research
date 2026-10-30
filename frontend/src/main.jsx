@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 const REGIONS = ['US', 'UK', 'IN', 'EU', 'JP', 'CA', 'AU', 'SG', 'BR'];
-const STORAGE_KEY = 'acr_api_key';
 
 const READ_TIMEOUT_MS = 20000;
 const WRITE_TIMEOUT_MS = 120000;
@@ -22,10 +21,8 @@ function requestTimeoutMs(path, method) {
 /* ------------------------------------------------------------------ */
 async function api(path, options = {}) {
   const { timeoutMs: timeoutOverride, headers: extraHeaders, ...fetchOptions } = options;
-  const key = sessionStorage.getItem(STORAGE_KEY) || '';
   const headers = {
     ...(fetchOptions.body ? { 'Content-Type': 'application/json' } : {}),
-    ...(key ? { 'X-API-Key': key } : {}),
     ...(extraHeaders || {}),
   };
 
@@ -76,17 +73,11 @@ async function api(path, options = {}) {
       data = text;
     }
 
-    if (response.status === 401) {
-      const authError = new Error(
-        'The workspace key is missing or incorrect. Open “Set workspace key” and enter the API_KEY value from Northflank.',
-      );
-      authError.code = 'auth';
-      throw authError;
-    }
+    if (response.status === 401) throw new Error('This workspace is not accepting public research requests yet. The service owner needs to enable public workspace access in the backend deployment.');
     if (response.status === 503) {
       throw new Error(
         data?.detail ||
-          'The API service refused the request (503). If it says authentication is not configured, set API_KEY in the service environment.',
+          'The API service refused the request (503). Check the backend deployment’s authentication and provider configuration.',
       );
     }
     if (!response.ok) {
@@ -193,59 +184,6 @@ function Masthead({ eyebrow, title, lede, actions }) {
   );
 }
 
-function KeyDialog({ open, value, onChange, onClose, onSave, onClear, hasKey }) {
-  if (!open) return null;
-  return (
-    <div className="scrim" onClick={onClose} role="presentation">
-      <aside className="drawer key-drawer" onClick={(event) => event.stopPropagation()} role="dialog" aria-labelledby="key-dialog-title">
-        <div className="drawer-head">
-          <h2 id="key-dialog-title">Workspace key</h2>
-          <button className="btn-ghost" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
-        <p className="muted">
-          This is the <span className="mono">API_KEY</span> secret on the Northflank API service. It stays in this
-          browser tab only.
-        </p>
-        <ol className="key-steps">
-          <li>Open the Northflank project, then click <strong>Services</strong> in the left sidebar — not Builds.</li>
-          <li>Open the running service (for example <span className="mono">ai-research-platform</span>).</li>
-          <li>
-            Open the service <strong>Environment</strong> page (sometimes labelled Runtime variables). You may be asked
-            for your Northflank password.
-          </li>
-          <li>
-            If that page is empty, open project <strong>Secrets</strong>, edit the secret group linked to the service,
-            then restart the service.
-          </li>
-          <li>Copy the <span className="mono">API_KEY</span> value and paste it below.</li>
-        </ol>
-        <label className="field">
-          <span>API_KEY</span>
-          <input
-            type="password"
-            autoComplete="off"
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder="Paste the Northflank API_KEY"
-          />
-        </label>
-        <div className="key-actions">
-          <button className="btn-primary" onClick={onSave} disabled={!value.trim()}>
-            Save for this tab
-          </button>
-          {hasKey && (
-            <button className="btn-ghost" onClick={onClear}>
-              Clear key
-            </button>
-          )}
-        </div>
-      </aside>
-    </div>
-  );
-}
-
 function Empty({ title, text, action, onAction }) {
   return (
     <div className="empty">
@@ -280,10 +218,8 @@ function App() {
   const [chatSessionId, setChatSessionId] = useState(null);
   const [deepRun, setDeepRun] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [keyOpen, setKeyOpen] = useState(false);
-  const [keyDraft, setKeyDraft] = useState('');
-  const [hasKey, setHasKey] = useState(() => Boolean(sessionStorage.getItem(STORAGE_KEY)));
+  const [navFilter, setNavFilter] = useState('');
+  const navSearchRef = useRef(null);
 
   const loadHealth = () =>
     api('/health', { timeoutMs: 12000 })
@@ -295,6 +231,22 @@ function App() {
 
   useEffect(() => {
     loadHealth();
+  }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        navSearchRef.current?.focus();
+      }
+      if (event.key === 'Escape') {
+        setNavOpen(false);
+        setNavFilter('');
+        navSearchRef.current?.blur();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
   }, []);
 
   useEffect(() => {
@@ -310,31 +262,8 @@ function App() {
       setPage('run');
       setNavOpen(false);
     } catch (error) {
-      if (error.code === 'auth') setKeyOpen(true);
       setToast(error.message);
     }
-  };
-
-  const openKeyPrompt = () => {
-    setKeyDraft(sessionStorage.getItem(STORAGE_KEY) || '');
-    setKeyOpen(true);
-  };
-
-  const saveKey = () => {
-    const entered = keyDraft.trim();
-    if (entered) sessionStorage.setItem(STORAGE_KEY, entered);
-    else sessionStorage.removeItem(STORAGE_KEY);
-    setHasKey(Boolean(entered));
-    setKeyOpen(false);
-    loadHealth();
-    setToast(entered ? 'Workspace key saved for this tab.' : 'Workspace key cleared for this browser tab.');
-  };
-
-  const clearKey = () => {
-    sessionStorage.removeItem(STORAGE_KEY);
-    setHasKey(false);
-    setKeyDraft('');
-    setToast('Workspace key cleared for this browser tab.');
   };
 
   const openSavedRun = async (run) => {
@@ -369,55 +298,68 @@ function App() {
   };
 
   const online = health?.status === 'ok';
-  const primaryNav = [
-    ['dashboard', 'Overview'], ['history', 'History'], ['run', 'Competitive'], ['deep', 'Deep research'],
+  const navGroups = [
+    { label: 'Workspace', items: [['dashboard', 'Overview', 'grid'], ['history', 'Research history', 'layers']] },
+    { label: 'Build the research', items: [['run', 'Competitive run', 'target'], ['deep', 'Deep research', 'compass']] },
+    { label: 'Review findings', items: [['evidence', 'Evidence library', 'doc'], ['signals', 'Market signals', 'pulse'], ['chat', 'Research chat', 'chat'], ['reports', 'Reports', 'doc']] },
   ];
-  const secondaryNav = [['signals', 'Signals'], ['evidence', 'Evidence'], ['chat', 'Research chat'], ['reports', 'Reports']];
+  const normalizedNavFilter = navFilter.trim().toLowerCase();
+  const pageTitle = Object.fromEntries(navGroups.flatMap((group) => group.items.map(([id, label]) => [id, label])))[page] || 'Research workspace';
   const navigate = (nextPage) => {
     setPage(nextPage);
     setNavOpen(false);
-    setMoreOpen(false);
+    setNavFilter('');
   };
 
   return (
-    <div className="shell">
+    <div className={`workspace-shell${navOpen ? ' workspace-nav-open' : ''}`}>
       <a className="skip" href="#main">
         Skip to content
       </a>
 
-      <header className={`site-nav${navOpen ? ' site-nav-open' : ''}`}>
+      <aside className="workspace-sidebar" aria-label="Workspace navigation">
         <button className="site-brand" onClick={() => navigate('dashboard')} aria-label="Scope intelligence home">
           <span className="site-brand-mark"><i /><i /><i /></span>
           <span className="site-brand-copy"><strong>Scope</strong><small>MARKET INTELLIGENCE</small></span>
         </button>
-        <button className="site-mobile-toggle" onClick={() => setNavOpen((open) => !open)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen}>
-          <Icon name={navOpen ? 'alert' : 'menu'} />
-        </button>
-        <nav className="site-links" aria-label="Main navigation">
-          {primaryNav.map(([id, label]) => (
-            <button key={id} className={page === id ? 'is-active' : ''} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined}>{label}</button>
-          ))}
-          <div className="site-more">
-            <button className={secondaryNav.some(([id]) => id === page) ? 'is-active' : ''} onClick={() => setMoreOpen((open) => !open)} aria-expanded={moreOpen}>
-              More <span aria-hidden="true">⌄</span>
-            </button>
-            {moreOpen && <div className="site-more-menu">
-              {secondaryNav.map(([id, label]) => <button key={id} className={page === id ? 'is-active' : ''} onClick={() => navigate(id)}>{label}</button>)}
-            </div>}
-          </div>
+        <label className="workspace-search">
+          <Icon name="search" size={16} />
+          <input ref={navSearchRef} value={navFilter} onChange={(event) => setNavFilter(event.target.value)} placeholder="Go to…" aria-label="Find a workspace section" />
+          <kbd>⌘K</kbd>
+        </label>
+        <nav className="workspace-nav" aria-label="Main navigation">
+          {navGroups.map((group) => {
+            const items = group.items.filter(([, label]) => !normalizedNavFilter || label.toLowerCase().includes(normalizedNavFilter));
+            if (!items.length) return null;
+            return <section className="workspace-nav-group" key={group.label}>
+              <h2>{group.label}</h2>
+              {items.map(([id, label, icon]) => (
+                <button key={id} className={`workspace-nav-item${page === id ? ' is-active' : ''}`} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined}>
+                  <Icon name={icon} size={16} /><span>{label}</span>
+                </button>
+              ))}
+            </section>;
+          })}
+          {normalizedNavFilter && !navGroups.some((group) => group.items.some(([, label]) => label.toLowerCase().includes(normalizedNavFilter))) && <p className="workspace-search-empty">No matching sections</p>}
         </nav>
-        <div className="site-actions">
-          <div className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite" title={health?.llm_provider_chain?.length ? `Route: ${health.llm_provider_chain.join(' / ')}` : undefined}>
-            <span className="connection-dot" /><span>{online ? 'Connected' : health?.status === 'error' ? 'Offline' : 'Connecting'}</span>
+        <div className="workspace-sidebar-footer">
+          <div className={`workspace-service${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite">
+            <span className="connection-dot" /><span><strong>{online ? 'Service ready' : health?.status === 'error' ? 'Service offline' : 'Connecting'}</strong><small>Research API</small></span>
           </div>
-          <button className="site-key" onClick={openKeyPrompt} aria-label={hasKey ? 'Change workspace key' : 'Set workspace key'} title={hasKey ? 'Change workspace key' : 'Set workspace key'}><Icon name="key" size={16} /></button>
-          {hasKey && <button className="site-key site-key-clear" onClick={clearKey}>Clear key</button>}
-          <button className="btn-primary site-new" onClick={() => navigate('run')} aria-label="New research"><Icon name="plus" size={15} /><span>New research</span></button>
+          <span className="workspace-local-note">Evidence saved to your workspace</span>
         </div>
-      </header>
+      </aside>
+      {navOpen && <button className="workspace-nav-scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />}
 
       <main className="main" id="main">
-
+        <header className="workspace-topbar">
+          <button className="workspace-mobile-toggle" onClick={() => setNavOpen((open) => !open)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen}><Icon name="menu" /></button>
+          <div className="workspace-crumb"><span>Scope</span><span aria-hidden="true">/</span><strong>{pageTitle}</strong></div>
+          <div className="workspace-topbar-actions">
+            <div className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite" title={health?.llm_provider_chain?.length ? `Route: ${health.llm_provider_chain.join(' / ')}` : undefined}><span className="connection-dot" /><span>{online ? 'Connected' : health?.status === 'error' ? 'Offline' : 'Connecting'}</span></div>
+            <button className="btn-primary site-new" onClick={() => navigate('run')} aria-label="New research"><Icon name="plus" size={15} /><span>New research</span></button>
+          </div>
+        </header>
         <div className="content">
           {health?.status === 'error' && (
             <div className="banner" role="alert">
@@ -432,22 +374,6 @@ function App() {
             </div>
           )}
 
-          {online && health?.auth_required && !hasKey && (
-            <div className="banner banner-key" role="status">
-              <Icon name="key" size={16} />
-              <div>
-                <strong>Enter the workspace key to run research</strong>
-                <p>
-                  The API is connected, but research endpoints need the Northflank <span className="mono">API_KEY</span>.
-                  Browsing Overview still works. Set the key before starting a run.
-                </p>
-              </div>
-              <button className="btn-primary" onClick={openKeyPrompt}>
-                Set workspace key
-              </button>
-            </div>
-          )}
-
           {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} onOpenRun={openSavedRun} health={health} />}
           {page === 'history' && <ResearchHistory onOpenRun={openSavedRun} onOpenChat={openSavedChat} notify={setToast} />}
           {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onClearRun={clearCurrentRun} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} notify={setToast} />}
@@ -458,7 +384,7 @@ function App() {
               onChat={() => askAboutRun(deepRun?.run_id)}
               notify={setToast}
               health={health}
-              onNeedKey={openKeyPrompt}
+              onNeedKey={() => setToast('This workspace is not accepting public research requests yet. The service owner needs to enable public workspace access in the backend deployment.')}
             />
           )}
           {page === 'evidence' && <Evidence runId={runId} notify={setToast} />}
@@ -478,18 +404,6 @@ function App() {
         </div>
       )}
 
-      <KeyDialog
-        open={keyOpen}
-        value={keyDraft}
-        onChange={setKeyDraft}
-        onClose={() => setKeyOpen(false)}
-        onSave={saveKey}
-        onClear={() => {
-          clearKey();
-          setKeyOpen(false);
-        }}
-        hasKey={hasKey}
-      />
     </div>
   );
 }
@@ -1350,18 +1264,17 @@ function Evidence({ runId, notify }) {
   const [rows, setRows] = useState([]);
   const [sources, setSources] = useState([]);
   const [sourceText, setSourceText] = useState('');
-  const [sourceSelected, setSourceSelected] = useState(null);
   const [sourceLoading, setSourceLoading] = useState(false);
+  const [search, setSearch] = useState('');
   const [region, setRegion] = useState('');
-  const [product, setProduct] = useState('');
-  const [selected, setSelected] = useState(null);
+  const [selectedKey, setSelectedKey] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ limit: '200' });
     if (region) params.set('region', region);
-    if (product) params.set('product', product);
+    if (search) params.set('product', search);
     if (runId) params.set('run_id', runId);
 
     const offersRequest = api(`/offers?${params}`);
@@ -1372,16 +1285,53 @@ function Evidence({ runId, notify }) {
       if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value);
       else setSources([]);
     }).finally(() => setLoading(false));
-  }, [region, product, runId]);
+  }, [region, search, runId]);
+
+  const items = useMemo(() => [
+    ...sources.map((source) => ({
+      kind: 'source',
+      key: `source:${source.source_url}:${source.content_hash || ''}`,
+      title: source.source_url,
+      subtitle: `${num(source.size)} chars captured`,
+      url: source.source_url,
+      source,
+    })),
+    ...rows.map((offer, index) => ({
+      kind: 'offer',
+      key: `offer:${offer.run_id || runId || 'all'}:${offer.url || index}:${offer.product_name}`,
+      title: offer.product_name || 'Captured offer',
+      subtitle: `${offer.competitor || offer.brand || 'Company not identified'} · ${offer.region || 'Region not identified'} · ${money(offer.price, offer.currency)}`,
+      url: offer.url,
+      offer,
+    })),
+  ], [rows, sources, runId]);
+  const selectedItem = items.find((item) => item.key === selectedKey) || items[0] || null;
 
   const openSource = async (source) => {
-    setSourceSelected(source);
     setSourceText('');
     setSourceLoading(true);
     try {
-      const query = new URLSearchParams({ source_url: source.source_url, run_id: runId });
+      const query = new URLSearchParams({ source_url: source.source_url, run_id: source.run_id || runId || '' });
       const data = await api(`/evidence/content?${query}`);
       setSourceText(data.content || 'No captured page text was saved.');
+    } catch (error) {
+      notify(error.message);
+      setSourceText('The saved page content could not be loaded.');
+    } finally {
+      setSourceLoading(false);
+    }
+  };
+
+  const openOfferSource = async (offer) => {
+    if (!offer?.url) return;
+    const source = sources.find((item) => item.source_url === offer.url);
+    if (source) return openSource(source);
+    setSourceLoading(true);
+    setSourceText('');
+    try {
+      const query = new URLSearchParams({ source_url: offer.url, run_id: offer.run_id || runId || '' });
+      const data = await api(`/evidence/content?${query}`);
+      setSourceText(data.content || 'No captured page text was saved for this observation.');
     } catch (error) {
       notify(error.message);
       setSourceText('The saved page content could not be loaded.');
@@ -1393,137 +1343,52 @@ function Evidence({ runId, notify }) {
   return (
     <>
       <Masthead
-        eyebrow="Evidence"
-        title="Captured observations"
-        lede="Each row keeps its source URL, capture time and extraction confidence so any claim can be checked."
+        eyebrow="SOURCE LIBRARY"
+        title="Evidence, in context."
+        lede="Every captured offer stays beside the page it came from, with the price, region, and extraction detail ready to inspect."
       />
 
-      <section className="panel">
-        <div className="filters">
-          <label className="field field-inline">
-            <span>Product</span>
-            <input value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Filter by product" />
-          </label>
-          <label className="field field-inline">
-            <span>Region</span>
-            <select value={region} onChange={(e) => setRegion(e.target.value)}>
-              <option value="">All regions</option>
-              {REGIONS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {loading ? (
-          <div className="skeleton-table" aria-busy="true" aria-label="Loading observations">
-            {[0, 1, 2, 3, 4, 5].map((row) => (
-              <div className="skeleton-row" key={row}>
-                <span className="skeleton skeleton-cell" style={{ width: '22%' }} />
-                <span className="skeleton skeleton-cell" style={{ width: '12%' }} />
-                <span className="skeleton skeleton-cell" style={{ width: '10%' }} />
-                <span className="skeleton skeleton-cell" style={{ width: '16%' }} />
-              </div>
-            ))}
+      <section className="evidence-workspace" aria-label="Captured source library">
+        <aside className="evidence-library">
+          <div className="evidence-library-toolbar">
+            <label className="evidence-search"><Icon name="search" size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search evidence…" aria-label="Search captured evidence" /></label>
+            <label className="evidence-region"><span>REGION</span><select value={region} onChange={(event) => setRegion(event.target.value)} aria-label="Filter by region"><option value="">All regions</option>{REGIONS.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+            <div className="evidence-count">{loading ? 'Loading evidence…' : `${items.length} captured items`}</div>
           </div>
-        ) : rows.length ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Product</th>
-                <th scope="col">Price</th>
-                <th scope="col">Region</th>
-                <th scope="col">Availability</th>
-                <th scope="col" className="align-right">Confidence</th>
-                <th scope="col"><span className="sr-only">Open</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((offer, index) => (
-                <tr key={index} onClick={() => setSelected(offer)} className="clickable">
-                  <td>{offer.product_name}</td>
-                  <td className="mono">{money(offer.price, offer.currency)}</td>
-                  <td>{offer.region}</td>
-                  <td>{pretty(offer.availability)}</td>
-                  <td className="align-right mono">
-                    {offer.extraction_confidence != null
-                      ? `${Math.round(offer.extraction_confidence * 100)}%`
-                      : '—'}
-                  </td>
-                  <td className="align-right">
-                    <Icon name="arrow" size={14} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <Empty
-            title="No observations yet"
-            text="Run a competitive research run to capture structured price observations."
-          />
-        )}
-      </section>
-
-      {runId && (
-        <section className="panel captured-sources">
-          <div className="panel-head">
-            <div><h2>Source pages from this run</h2><p className="muted">The pages the crawler actually fetched, with saved text available to inspect.</p></div>
-            <Badge>{sources.length} sources</Badge>
-          </div>
-          {sources.length ? (
-            <ul className="captured-source-list">
-              {sources.map((source) => (
-                <li key={`${source.source_url}-${source.content_hash}`}>
-                  <div><strong>{short(source.source_url, 78)}</strong><small>{num(source.size)} chars · {source.scraped_at ? new Date(source.scraped_at).toLocaleString() : 'capture time unavailable'}</small></div>
-                  <a href={source.source_url} target="_blank" rel="noreferrer" aria-label="Open source website"><Icon name="external" size={14} /></a>
-                  <button className="btn-ghost" onClick={() => openSource(source)}>Inspect captured text</button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <Empty title="No page text saved for this run" text="The run may have used older history or only produced structured offers. New runs retain their fetched page text here." />
-          )}
-        </section>
-      )}
-
-      {sourceSelected && (
-        <div className="scrim" onClick={() => { setSourceText(''); setSourceSelected(null); }} role="presentation">
-          <aside className="drawer source-drawer" onClick={(event) => event.stopPropagation()} aria-label="Captured source text">
-            <div className="drawer-head"><h2>Captured page text</h2><button className="btn-ghost" onClick={() => { setSourceText(''); setSourceSelected(null); }} aria-label="Close">×</button></div>
-            {sourceLoading ? <p className="muted">Loading captured source…</p> : <pre className="source-content">{sourceText}</pre>}
-          </aside>
-        </div>
-      )}
-
-      {selected && (
-        <div className="scrim" onClick={() => setSelected(null)} role="presentation">
-          <aside className="drawer" onClick={(e) => e.stopPropagation()} aria-label="Observation detail">
-            <div className="drawer-head">
-              <h2>{selected.product_name}</h2>
-              <button className="btn-ghost" onClick={() => setSelected(null)} aria-label="Close">
-                ×
+          <div className="evidence-item-list" role="listbox" aria-label="Captured evidence">
+            {loading ? <div className="evidence-loading"><span /><span /><span /></div> : items.length ? items.map((item) => (
+              <button key={item.key} role="option" aria-selected={(selectedItem?.key === item.key)} className={`evidence-item${selectedItem?.key === item.key ? ' is-selected' : ''}`} onClick={() => { setSelectedKey(item.key); setSourceText(''); }}>
+                <span className="evidence-item-kind">{item.kind === 'source' ? 'SOURCE PAGE' : 'CAPTURED OFFER'}</span>
+                <strong>{item.kind === 'source' ? short(item.title, 66) : item.title}</strong>
+                <small>{item.subtitle}</small>
+                {item.kind === 'offer' && <span className="evidence-item-price">{money(item.offer.price, item.offer.currency)}</span>}
               </button>
-            </div>
-            <p className="drawer-price mono">{money(selected.price, selected.currency)}</p>
-            <dl className="facts">
-              <div><dt>Region</dt><dd>{selected.region}</dd></div>
-              <div><dt>Availability</dt><dd>{pretty(selected.availability)}</dd></div>
-              <div><dt>Competitor</dt><dd>{selected.competitor || '—'}</dd></div>
-              <div><dt>Captured</dt><dd>{selected.scraped_at ? new Date(selected.scraped_at).toLocaleString() : '—'}</dd></div>
-            </dl>
-            <div className="drawer-source">
-              <span className="eyebrow">Source</span>
-              <a href={selected.url} target="_blank" rel="noreferrer">
-                {short(selected.url, 70)}
-                <Icon name="external" size={13} />
-              </a>
-            </div>
-          </aside>
-        </div>
-      )}
+            )) : <div className="evidence-list-empty"><strong>No evidence found</strong><p>Change the search or run competitive research to capture source pages and offers.</p></div>}
+          </div>
+        </aside>
+        <article className="evidence-detail" aria-live="polite">
+          {!selectedItem ? <Empty title="Your evidence will appear here" text="Select a captured source or offer to inspect its details." /> : selectedItem.kind === 'source' ? (
+            <>
+              <div className="evidence-detail-top"><Badge tone="good">SOURCE CAPTURED</Badge><span className="mono">{selectedItem.source.scraped_at ? new Date(selectedItem.source.scraped_at).toLocaleString() : 'Capture time unavailable'}</span></div>
+              <h2>{short(selectedItem.source.source_url, 110)}</h2>
+              <p className="evidence-detail-lede">A source page fetched for this research. The captured text is retained so findings can be traced to the original evidence.</p>
+              <div className="evidence-contribution"><div><span>CAPTURED CONTENT</span><strong>{num(selectedItem.source.size)} characters</strong></div><div><span>CONTENT HASH</span><strong className="mono">{short(selectedItem.source.content_hash, 28)}</strong></div></div>
+              <div className="evidence-detail-actions"><button className="btn-primary" onClick={() => openSource(selectedItem.source)}><Icon name="doc" size={15} /> Inspect captured text</button><a className="btn-ghost" href={selectedItem.source.source_url} target="_blank" rel="noreferrer">Open original page <Icon name="external" size={14} /></a></div>
+              {sourceText && <div className="evidence-captured-text"><div className="evidence-text-heading"><strong>Captured page text</strong>{sourceLoading && <small>Loading…</small>}</div><pre className="source-content">{sourceText}</pre></div>}
+            </>
+          ) : (
+            <>
+              <div className="evidence-detail-top"><Badge tone="good">CAPTURED OFFER</Badge><span className="mono">{selectedItem.offer.scraped_at ? new Date(selectedItem.offer.scraped_at).toLocaleString() : 'Capture time unavailable'}</span></div>
+              <div className="evidence-offer-heading"><div><span className="eyebrow">{selectedItem.offer.competitor || selectedItem.offer.brand || 'Company not identified'}</span><h2>{selectedItem.offer.product_name}</h2></div><strong>{money(selectedItem.offer.price, selectedItem.offer.currency)}</strong></div>
+              <p className="evidence-detail-lede">This offer was extracted from a fetched competitor page. Verify the original listing before using it in a decision.</p>
+              <div className="evidence-contribution"><div><span>COMPANY</span><strong>{selectedItem.offer.competitor || selectedItem.offer.brand || 'Not identified'}</strong></div><div><span>REGION</span><strong>{selectedItem.offer.region || 'Not specified'}</strong></div><div><span>AVAILABILITY</span><strong>{pretty(selectedItem.offer.availability) || 'Unknown'}</strong></div><div><span>EXTRACTION CONFIDENCE</span><strong>{selectedItem.offer.extraction_confidence != null ? `${Math.round(selectedItem.offer.extraction_confidence * 100)}%` : 'Not reported'}</strong></div></div>
+              <div className="evidence-detail-source"><span>SOURCE URL</span><a href={selectedItem.offer.url} target="_blank" rel="noreferrer">{selectedItem.offer.url || 'No source URL saved'} <Icon name="external" size={14} /></a></div>
+              <div className="evidence-detail-actions">{selectedItem.offer.url && <button className="btn-primary" onClick={() => openOfferSource(selectedItem.offer)}><Icon name="doc" size={15} /> {sourceLoading ? 'Loading source…' : 'Inspect captured text'}</button>}</div>
+              {sourceText && <div className="evidence-captured-text"><div className="evidence-text-heading"><strong>Captured page text</strong>{sourceLoading && <small>Loading…</small>}</div><pre className="source-content">{sourceText}</pre></div>}
+            </>
+          )}
+        </article>
+      </section>
     </>
   );
 }

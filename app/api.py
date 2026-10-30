@@ -36,6 +36,7 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _rate_lock = threading.Lock()
 _rate_window: dict[str, list[float]] = {}
+_public_hour_window: dict[str, list[float]] = {}
 
 
 class ReviewQueryRequest(BaseModel):
@@ -80,7 +81,7 @@ class JobCreateRequest(CompetitorTarget):
 
 
 def _require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
-    """Constant-time API-key guard for expensive/mutating endpoints."""
+    """Constant-time API-key guard for private/mutating endpoints."""
     if settings.api_key_required and settings.api_key:
         if not x_api_key or not secrets.compare_digest(x_api_key, settings.api_key):
             raise HTTPException(status_code=401, detail="invalid or missing API key")
@@ -89,18 +90,58 @@ def _require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
         raise HTTPException(status_code=503, detail="API authentication is not configured")
 
 
+def _require_public_research_or_api_key(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+) -> None:
+    """Allow only the visitor-facing research API through in public mode."""
+    path = request.url.path
+    public_write = request.method == "POST" and path in {
+        "/research", "/research/jobs", "/research/deep", "/research/chat",
+    }
+    public_job_read = request.method == "GET" and path.startswith("/research/jobs/")
+    if settings.public_workspace_mode and (public_write or public_job_read):
+        return
+    _require_api_key(x_api_key)
+
+
 def _research_rate_limit(request: Request) -> None:
     """Small single-process guard against accidental runaway scraping/LLM spend.
     Put a real distributed limiter in front of multi-instance deployments.
     """
     ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
+    path = request.url.path
+    if settings.public_workspace_mode:
+        # Bound anonymous hosted usage even when the shared deployment key is
+        # disabled. New crawls are costly; chat requests receive a separate cap.
+        group = "chat" if path == "/research/chat" else "research"
+        minute_cap = 12 if group == "chat" else 2
+        hour_cap = 40 if group == "chat" else 12
+        key = f"{group}:{ip}"
+        with _rate_lock:
+            minute_values = [t for t in _rate_window.get(key, []) if now - t < 60]
+            if len(minute_values) >= minute_cap:
+                raise HTTPException(status_code=429, detail="public workspace limit reached; try again shortly")
+            hour_values = [t for t in _public_hour_window.get(key, []) if now - t < 3600]
+            if len(hour_values) >= hour_cap:
+                raise HTTPException(status_code=429, detail="public workspace hourly research limit reached; try again later")
+            minute_values.append(now)
+            hour_values.append(now)
+            _rate_window[key] = minute_values
+            _public_hour_window[key] = hour_values
+        return
     with _rate_lock:
         values = [t for t in _rate_window.get(ip, []) if now - t < 60]
         if len(values) >= settings.research_rate_limit_per_minute:
             raise HTTPException(status_code=429, detail="research rate limit exceeded; try again later")
         values.append(now)
         _rate_window[ip] = values
+
+
+def _validate_public_target(target: CompetitorTarget) -> None:
+    if settings.public_workspace_mode and (len(target.competitors) > 4 or len(target.regions) > 3):
+        raise HTTPException(status_code=422, detail="public research is limited to four competitors and three regions per run")
 
 def _set_job(job_id: str, **updates) -> None:
     with _jobs_lock:
@@ -272,7 +313,7 @@ def create_app():
         _store.reconcile_jobs_after_restart()
     except Exception:
         logger.exception("could not reconcile persisted research jobs on startup")
-    if settings.api_key_required and not settings.demo_mode and not settings.api_key:
+    if settings.api_key_required and not settings.public_workspace_mode and not settings.demo_mode and not settings.api_key:
         logger.error("API_KEY_REQUIRED=true but API_KEY is missing; live service will reject protected endpoints")
 
     app = FastAPI(title=settings.app_name, version="5.0.0", docs_url="/docs", redoc_url="/redoc")
@@ -299,7 +340,8 @@ def create_app():
             "storage_backend": "postgresql" if _store._postgres else "sqlite",
             "offers": _store.count(), "review_backend": _reviews.backend,
             "scheduler": settings.scheduler_autostart,
-            "auth_required": bool(settings.api_key_required),
+            "auth_required": bool(settings.api_key_required and not settings.public_workspace_mode),
+            "public_workspace": bool(settings.public_workspace_mode),
             "active_llm_provider": client.provider_name,
             "active_llm_model": client.active_model,
             "llm_provider_chain": client.chain,
@@ -325,22 +367,34 @@ def create_app():
             },
         }
 
-    @app.post("/research", response_model=PipelineResult, dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
+    @app.post("/research", response_model=PipelineResult, dependencies=[Depends(_require_public_research_or_api_key), Depends(_research_rate_limit)])
     def research(target: CompetitorTarget):
+        _validate_public_target(target)
         try:
             return _pipeline.run(target)
         except Exception as e:
             logger.exception("research run failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/research/jobs", dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
+    @app.post("/research/jobs", dependencies=[Depends(_require_public_research_or_api_key), Depends(_research_rate_limit)])
     def create_research_job(target: JobCreateRequest, background_tasks: BackgroundTasks):
+        _validate_public_target(target)
         job_id = uuid.uuid4().hex[:12]
-        _set_job(job_id, status="queued", target=target.model_dump(mode="json"), events=[])
+        target_data = target.model_dump(mode="json")
+        if settings.public_workspace_mode:
+            with _jobs_lock:
+                active = sum(job.get("status") in {"queued", "running"} for job in _jobs.values())
+                if active >= 2:
+                    raise HTTPException(status_code=429, detail="the public research queue is busy; try again when a run finishes")
+                # Reserve the slot while holding the same lock used by other
+                # public submissions, so two concurrent requests cannot both
+                # observe the final available slot.
+                _jobs[job_id] = {"job_id": job_id, "status": "queued", "target": target_data, "events": []}
+        _set_job(job_id, status="queued", target=target_data, events=[])
         background_tasks.add_task(_run_job, job_id, target)
         return {"job_id": job_id, "status": "queued"}
 
-    @app.get("/research/jobs/{job_id}", dependencies=[Depends(_require_api_key)])
+    @app.get("/research/jobs/{job_id}", dependencies=[Depends(_require_public_research_or_api_key)])
     def research_job(job_id: str):
         if not is_safe_run_id(job_id):
             raise HTTPException(status_code=422, detail="invalid job_id")
@@ -362,9 +416,15 @@ def create_app():
     # ------------------------------------------------------------------
     # deep research (url / topic / compare)
     # ------------------------------------------------------------------
-    @app.post("/research/deep", dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
+    @app.post("/research/deep", dependencies=[Depends(_require_public_research_or_api_key), Depends(_research_rate_limit)])
     def deep_research(payload: DeepResearchRequest):
         from app.research.models import ResearchMode, ResearchRequest
+
+        if settings.public_workspace_mode:
+            if len(payload.competitors) > 4:
+                raise HTTPException(status_code=422, detail="public deep research is limited to four competitors per run")
+            if payload.max_pages > settings.deep_max_pages or payload.max_depth > settings.deep_max_depth:
+                raise HTTPException(status_code=422, detail="requested crawl exceeds the public workspace page/depth limits")
 
         mode = ResearchMode(payload.mode)
         if mode is ResearchMode.url and not payload.url:
@@ -411,7 +471,7 @@ def create_app():
 
     # NOTE: literal /research/chat paths are declared before the parameterised
     # routes below so "chat" is never read as a session_id.
-    @app.post("/research/chat", dependencies=[Depends(_require_api_key), Depends(_research_rate_limit)])
+    @app.post("/research/chat", dependencies=[Depends(_require_public_research_or_api_key), Depends(_research_rate_limit)])
     def research_chat(payload: ChatRequest):
         from app.research.chat import ResearchChat
 

@@ -52,6 +52,27 @@ def _list_env(name: str) -> List[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "https://ai-competitor-research.onrender.com",
+    "https://ai-competitor-research-web.onrender.com",
+]
+
+
+def cors_origins_from_env() -> List[str]:
+    """Union configured origins with the known frontend hosts.
+
+    If CORS_ORIGINS replaces the defaults, a typo or localhost-only value
+    silently blocks the live Render site. Always keep the known hosts.
+    """
+    merged: List[str] = []
+    for origin in _list_env("CORS_ORIGINS") + _DEFAULT_CORS_ORIGINS:
+        if origin and origin not in merged:
+            merged.append(origin)
+    return merged
+
+
 def _region_proxies() -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
 
@@ -496,7 +517,7 @@ class Settings:
     deep_search_enabled: bool = field(
         default_factory=lambda: _bool_env(
             "DEEP_SEARCH_ENABLED",
-            False,
+            True,
         )
     )
 
@@ -551,14 +572,15 @@ class Settings:
         )
     )
 
+    # Public frontends cannot safely hold a shared API key. Enable this only
+    # for deployments intended to be accessible to unauthenticated visitors.
+    # Expensive research endpoints apply tighter public-use limits in api.py.
+    public_workspace_mode: bool = field(
+        default_factory=lambda: _bool_env("PUBLIC_WORKSPACE_MODE", False)
+    )
+
     cors_origins: List[str] = field(
-        default_factory=lambda: _list_env("CORS_ORIGINS")
-        or [
-            "http://localhost:5173",
-            "http://localhost:8080",
-            "https://ai-competitor-research.onrender.com",
-            "https://ai-competitor-research-web.onrender.com",
-        ]
+        default_factory=cors_origins_from_env
     )
 
     research_timeout_seconds: int = field(

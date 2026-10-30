@@ -38,6 +38,15 @@ def test_cors_header_for_frontend(monkeypatch):
     response = client.get("/health", headers={"Origin": "http://localhost:5173"})
     assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
 
+
+def test_cors_always_keeps_live_frontend_origin(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173")
+    from app.config import cors_origins_from_env
+
+    origins = cors_origins_from_env()
+    assert "http://localhost:5173" in origins
+    assert "https://ai-competitor-research-web.onrender.com" in origins
+
 def test_provider_auto_selection(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "auto")
     monkeypatch.setattr(settings, "apinex_api_key", None)

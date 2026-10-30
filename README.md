@@ -610,9 +610,38 @@ Frontend at `http://localhost:5173`.
 4. **Build**: Dockerfile (auto-detected)
 5. **Port**: `8000` (critical!)
 6. **Health Check**: `/health`
-6. **Plan**: Free
-7. Add all environment variables above
-7. **Deploy**
+7. **Plan**: Free
+8. Add the environment variables listed above, then **Deploy**
+
+#### Where the environment variables actually are
+
+The **Builds** page only shows Docker logs. Runtime variables are not there.
+
+1. Click the project name in the top-left (for example **AI Research platform**) to leave the build view.
+2. In the **project** sidebar, click **Services**.
+3. Open the running combined service (for example `ai-research-platform`). Do not stay on a build job.
+4. Open the service **Environment** page. Northflank also calls this **runtime variables**. You may be asked for your password.
+5. Add or edit keys there (table, JSON, or `.env` mode), save, then restart/redeploy the service.
+
+If Environment is missing on the service:
+
+1. In the same project sidebar, open **Secrets**.
+2. Edit the secret group linked to the service, or create one and attach it.
+3. After saving secrets, restart the service so new values are injected.
+
+Required live values:
+
+```text
+DEEP_SEARCH_ENABLED=true
+DEEP_LLM_ENABLED=true
+API_KEY_REQUIRED=true
+PUBLIC_WORKSPACE_MODE=true
+API_KEY=<optional server-side secret — never put this in the frontend>
+CORS_ORIGINS=https://ai-competitor-research-web.onrender.com
+APINEX_API_KEY=<your provider key>
+```
+
+Public workspace mode lets visitors run research without entering an API key. Keep provider keys on Northflank. The backend applies stricter hourly and concurrent-run limits when public mode is enabled. `API_KEY` can remain in Northflank for switching back to private mode; it is never sent to the browser.
 
 ### Frontend on Render Static (Free, Already Working)
 
@@ -620,10 +649,11 @@ Current: `https://ai-competitor-research-web.onrender.com`
 
 Update `VITE_API_URL` to your Northflank URL, then **Manual Deploy → Clear build cache → Deploy**.
 Set `CORS_ORIGINS` on Northflank to the exact Render frontend origin (for example,
-`https://ai-competitor-research-web.onrender.com`). Keep `API_KEY_REQUIRED=true` and set
-`API_KEY` as a secret on Northflank. The browser prompts for this workspace key when a request
-requires it; never put it in `VITE_API_URL` or another `VITE_*` variable because those values are
-public in the built frontend. Set `DEEP_SEARCH_ENABLED=true` on the Northflank API service to enable
+`https://ai-competitor-research-web.onrender.com`). Set `PUBLIC_WORKSPACE_MODE=true` on the
+Northflank service to allow visitors to use the public frontend without a visitor key. Keep
+`API_KEY` and all provider keys on Northflank; never add them to Render's frontend environment
+because `VITE_*` values are public in the built frontend. Public mode applies per-IP request
+limits; CORS is browser policy, not authentication. Set `DEEP_SEARCH_ENABLED=true` on the API to enable
 topic and comparison discovery; `DEEP_LLM_ENABLED=true` controls model-assisted extraction.
 Use the public HTTP domain shown under the Northflank service's networking/ports settings. The
 same API base URL should be used for Render's `VITE_API_URL` and the GitHub keep-warm workflow.
