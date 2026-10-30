@@ -4,47 +4,45 @@ import './styles.css';
 
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
-const NAV_GROUPS = [
-  { label: 'Workspace', items: [['dashboard', 'Overview', 'grid'], ['history', 'History', 'layers']] },
-  { label: 'Research', items: [['run', 'Competitive run', 'target'], ['deep', 'Deep research', 'compass']] },
-  {
-    label: 'Intelligence',
-    items: [['signals', 'Signals', 'pulse'], ['evidence', 'Evidence', 'layers'], ['chat', 'Research chat', 'chat'], ['reports', 'Reports', 'doc']],
-  },
-];
-const NAV = NAV_GROUPS.flatMap((group) => group.items);
-
 const REGIONS = ['US', 'UK', 'IN', 'EU', 'JP', 'CA', 'AU', 'SG', 'BR'];
 const STORAGE_KEY = 'acr_api_key';
 
-// Generous, because a free-tier instance that has spun down takes a while to wake.
-const REQUEST_TIMEOUT_MS = 75000;
+const READ_TIMEOUT_MS = 20000;
+const WRITE_TIMEOUT_MS = 120000;
+const DEEP_TIMEOUT_MS = 720000;
+
+function requestTimeoutMs(path, method) {
+  if (method !== 'GET' && String(path).startsWith('/research/deep')) return DEEP_TIMEOUT_MS;
+  if (method !== 'GET') return WRITE_TIMEOUT_MS;
+  return READ_TIMEOUT_MS;
+}
 
 /* ------------------------------------------------------------------ */
 /* data access                                                         */
 /* ------------------------------------------------------------------ */
 async function api(path, options = {}) {
+  const { timeoutMs: timeoutOverride, headers: extraHeaders, ...fetchOptions } = options;
   const key = sessionStorage.getItem(STORAGE_KEY) || '';
   const headers = {
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(fetchOptions.body ? { 'Content-Type': 'application/json' } : {}),
     ...(key ? { 'X-API-Key': key } : {}),
-    ...(options.headers || {}),
+    ...(extraHeaders || {}),
   };
 
-  const method = options.method || 'GET';
-  // A Render free instance can take ~50s to wake from idle. Only idempotent
-  // reads are retried, so a research job can never be started twice.
+  const method = fetchOptions.method || 'GET';
+  // Only idempotent reads are retried, so a research job can never be started twice.
   const attempts = method === 'GET' ? 2 : 1;
+  const timeoutMs = timeoutOverride || requestTimeoutMs(path, method);
 
   let lastError = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     let response;
     try {
-      response = await fetch(`${API}${path}`, { ...options, headers, signal: controller.signal });
+      response = await fetch(`${API}${path}`, { ...fetchOptions, headers, signal: controller.signal });
     } catch (error) {
       clearTimeout(timer);
       lastError = error?.name === 'AbortError' ? 'timed out' : 'could not connect';
@@ -79,9 +77,11 @@ async function api(path, options = {}) {
     }
 
     if (response.status === 401) {
-      throw new Error(
-        'The workspace key is missing or incorrect. Set the API_KEY secret on the API service, then enter that value using “Set workspace key” in the sidebar.',
+      const authError = new Error(
+        'The workspace key is missing or incorrect. Open “Set workspace key” and enter the API_KEY value from Northflank.',
       );
+      authError.code = 'auth';
+      throw authError;
     }
     if (response.status === 503) {
       throw new Error(
@@ -193,6 +193,59 @@ function Masthead({ eyebrow, title, lede, actions }) {
   );
 }
 
+function KeyDialog({ open, value, onChange, onClose, onSave, onClear, hasKey }) {
+  if (!open) return null;
+  return (
+    <div className="scrim" onClick={onClose} role="presentation">
+      <aside className="drawer key-drawer" onClick={(event) => event.stopPropagation()} role="dialog" aria-labelledby="key-dialog-title">
+        <div className="drawer-head">
+          <h2 id="key-dialog-title">Workspace key</h2>
+          <button className="btn-ghost" onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        </div>
+        <p className="muted">
+          This is the <span className="mono">API_KEY</span> secret on the Northflank API service. It stays in this
+          browser tab only.
+        </p>
+        <ol className="key-steps">
+          <li>Open the Northflank project, then click <strong>Services</strong> in the left sidebar — not Builds.</li>
+          <li>Open the running service (for example <span className="mono">ai-research-platform</span>).</li>
+          <li>
+            Open the service <strong>Environment</strong> page (sometimes labelled Runtime variables). You may be asked
+            for your Northflank password.
+          </li>
+          <li>
+            If that page is empty, open project <strong>Secrets</strong>, edit the secret group linked to the service,
+            then restart the service.
+          </li>
+          <li>Copy the <span className="mono">API_KEY</span> value and paste it below.</li>
+        </ol>
+        <label className="field">
+          <span>API_KEY</span>
+          <input
+            type="password"
+            autoComplete="off"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Paste the Northflank API_KEY"
+          />
+        </label>
+        <div className="key-actions">
+          <button className="btn-primary" onClick={onSave} disabled={!value.trim()}>
+            Save for this tab
+          </button>
+          {hasKey && (
+            <button className="btn-ghost" onClick={onClear}>
+              Clear key
+            </button>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 function Empty({ title, text, action, onAction }) {
   return (
     <div className="empty">
@@ -227,12 +280,16 @@ function App() {
   const [chatSessionId, setChatSessionId] = useState(null);
   const [deepRun, setDeepRun] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [hasKey, setHasKey] = useState(() => Boolean(sessionStorage.getItem(STORAGE_KEY)));
 
   const loadHealth = () =>
-    api('/health')
+    api('/health', { timeoutMs: 12000 })
       .then(setHealth)
       .catch((error) => {
-        setHealth({ status: 'error' });
+        setHealth({ status: 'error', message: error.message });
         console.warn('Research API health check failed:', error.message);
       });
 
@@ -253,23 +310,30 @@ function App() {
       setPage('run');
       setNavOpen(false);
     } catch (error) {
+      if (error.code === 'auth') setKeyOpen(true);
       setToast(error.message);
     }
   };
 
   const openKeyPrompt = () => {
-    const entered = window.prompt(
-      'Enter the API_KEY configured on the API service. It is stored for this browser tab only.',
-      sessionStorage.getItem(STORAGE_KEY) || '',
-    );
-    if (entered === null) return;
-    if (entered.trim()) sessionStorage.setItem(STORAGE_KEY, entered.trim());
+    setKeyDraft(sessionStorage.getItem(STORAGE_KEY) || '');
+    setKeyOpen(true);
+  };
+
+  const saveKey = () => {
+    const entered = keyDraft.trim();
+    if (entered) sessionStorage.setItem(STORAGE_KEY, entered);
     else sessionStorage.removeItem(STORAGE_KEY);
+    setHasKey(Boolean(entered));
+    setKeyOpen(false);
     loadHealth();
+    setToast(entered ? 'Workspace key saved for this tab.' : 'Workspace key cleared for this browser tab.');
   };
 
   const clearKey = () => {
     sessionStorage.removeItem(STORAGE_KEY);
+    setHasKey(false);
+    setKeyDraft('');
     setToast('Workspace key cleared for this browser tab.');
   };
 
@@ -305,7 +369,15 @@ function App() {
   };
 
   const online = health?.status === 'ok';
-  const title = NAV.find((entry) => entry[0] === page)?.[1] || 'Overview';
+  const primaryNav = [
+    ['dashboard', 'Overview'], ['history', 'History'], ['run', 'Competitive'], ['deep', 'Deep research'],
+  ];
+  const secondaryNav = [['signals', 'Signals'], ['evidence', 'Evidence'], ['chat', 'Research chat'], ['reports', 'Reports']];
+  const navigate = (nextPage) => {
+    setPage(nextPage);
+    setNavOpen(false);
+    setMoreOpen(false);
+  };
 
   return (
     <div className="shell">
@@ -313,92 +385,46 @@ function App() {
         Skip to content
       </a>
 
-      <nav className={`rail${navOpen ? ' rail-open' : ''}`} aria-label="Main">
-        <div className="rail-brand">
-          <span className="rail-mark">CR</span>
-          <span className="rail-name">
-            Competitive<strong>Research</strong>
-          </span>
-        </div>
-
-        <ul className="rail-list">
-          {NAV_GROUPS.map((group) => (
-            <li className="rail-group" key={group.label}>
-              <span className="rail-group-label">{group.label}</span>
-              <ul className="rail-group-list">
-                {group.items.map(([id, label, icon]) => (
-                  <li key={id}>
-                    <button
-                      className={page === id ? 'is-active' : ''}
-                      onClick={() => {
-                        setPage(id);
-                        setNavOpen(false);
-                      }}
-                      aria-current={page === id ? 'page' : undefined}
-                    >
-                      <Icon name={icon} size={17} />
-                      <span>{label}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </li>
+      <header className={`site-nav${navOpen ? ' site-nav-open' : ''}`}>
+        <button className="site-brand" onClick={() => navigate('dashboard')} aria-label="Scope intelligence home">
+          <span className="site-brand-mark"><i /><i /><i /></span>
+          <span className="site-brand-copy"><strong>Scope</strong><small>MARKET INTELLIGENCE</small></span>
+        </button>
+        <button className="site-mobile-toggle" onClick={() => setNavOpen((open) => !open)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen}>
+          <Icon name={navOpen ? 'alert' : 'menu'} />
+        </button>
+        <nav className="site-links" aria-label="Main navigation">
+          {primaryNav.map(([id, label]) => (
+            <button key={id} className={page === id ? 'is-active' : ''} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined}>{label}</button>
           ))}
-        </ul>
-
-        <div className="rail-foot">
-          <div className="rail-status">
-            <span className={`dot${online ? ' dot-live' : ''}`} />
-            <div>
-              <strong>{online ? health.active_llm_provider : 'API unreachable'}</strong>
-              <small>{online ? health.mode : 'check the service'}</small>
-            </div>
+          <div className="site-more">
+            <button className={secondaryNav.some(([id]) => id === page) ? 'is-active' : ''} onClick={() => setMoreOpen((open) => !open)} aria-expanded={moreOpen}>
+              More <span aria-hidden="true">⌄</span>
+            </button>
+            {moreOpen && <div className="site-more-menu">
+              {secondaryNav.map(([id, label]) => <button key={id} className={page === id ? 'is-active' : ''} onClick={() => navigate(id)}>{label}</button>)}
+            </div>}
           </div>
-          <button className="rail-key" onClick={openKeyPrompt}>
-            <Icon name="key" size={15} />
-            {sessionStorage.getItem(STORAGE_KEY) ? 'Change workspace key' : 'Set workspace key'}
-          </button>
-          {sessionStorage.getItem(STORAGE_KEY) && <button className="rail-key" onClick={clearKey}>Clear key</button>}
+        </nav>
+        <div className="site-actions">
+          <div className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite" title={health?.llm_provider_chain?.length ? `Route: ${health.llm_provider_chain.join(' / ')}` : undefined}>
+            <span className="connection-dot" /><span>{online ? 'Connected' : health?.status === 'error' ? 'Offline' : 'Connecting'}</span>
+          </div>
+          <button className="site-key" onClick={openKeyPrompt} aria-label={hasKey ? 'Change workspace key' : 'Set workspace key'} title={hasKey ? 'Change workspace key' : 'Set workspace key'}><Icon name="key" size={16} /></button>
+          {hasKey && <button className="site-key site-key-clear" onClick={clearKey}>Clear key</button>}
+          <button className="btn-primary site-new" onClick={() => navigate('run')} aria-label="New research"><Icon name="plus" size={15} /><span>New research</span></button>
         </div>
-      </nav>
-      {navOpen && <button className="nav-scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />}
+      </header>
 
       <main className="main" id="main">
-        <header className="topbar">
-          <button className="topbar-menu" onClick={() => setNavOpen(true)} aria-label="Open navigation">
-            <Icon name="menu" />
-          </button>
-          <p className="topbar-crumb">{title}</p>
-          <div className="topbar-right">
-            {health?.llm_provider_chain?.length ? (
-              <span className="chain">
-                Route · {health.llm_provider_chain.join(' / ')}
-              </span>
-            ) : null}
-            <div
-              className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`}
-              aria-live="polite"
-            >
-              <span className="connection-dot" />
-              <span>{online ? 'API connected' : health?.status === 'error' ? 'API offline' : 'Connecting'}</span>
-            </div>
-            <button className="btn-primary" onClick={() => setPage('deep')}>
-              <Icon name="plus" size={15} />
-              New research
-            </button>
-          </div>
-        </header>
 
         <div className="content">
           {health?.status === 'error' && (
             <div className="banner" role="alert">
               <Icon name="alert" size={16} />
               <div>
-                <strong>The research API is not responding</strong>
-                <p>
-                  The API at <span className="mono">{API}</span> did not respond. Check your
-                  Northflank service status and deployment logs, then retry.
-                </p>
+                <strong>Research service is offline</strong>
+                <p>Check the API service status, then retry your connection.</p>
               </div>
               <button className="btn-ghost" onClick={loadHealth}>
                 Retry
@@ -406,15 +432,33 @@ function App() {
             </div>
           )}
 
+          {online && health?.auth_required && !hasKey && (
+            <div className="banner banner-key" role="status">
+              <Icon name="key" size={16} />
+              <div>
+                <strong>Enter the workspace key to run research</strong>
+                <p>
+                  The API is connected, but research endpoints need the Northflank <span className="mono">API_KEY</span>.
+                  Browsing Overview still works. Set the key before starting a run.
+                </p>
+              </div>
+              <button className="btn-primary" onClick={openKeyPrompt}>
+                Set workspace key
+              </button>
+            </div>
+          )}
+
           {page === 'dashboard' && <Dashboard runId={runId} onNavigate={setPage} onOpenRun={openSavedRun} health={health} />}
           {page === 'history' && <ResearchHistory onOpenRun={openSavedRun} onOpenChat={openSavedChat} notify={setToast} />}
-          {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onClearRun={clearCurrentRun} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} />}
+          {page === 'run' && <CompetitiveRun onStart={startRun} runId={runId} onClearRun={clearCurrentRun} onViewEvidence={() => setPage('evidence')} onAsk={askAboutRun} notify={setToast} />}
           {page === 'deep' && (
             <DeepResearch
               result={deepRun}
               onResult={setDeepRun}
               onChat={() => askAboutRun(deepRun?.run_id)}
               notify={setToast}
+              health={health}
+              onNeedKey={openKeyPrompt}
             />
           )}
           {page === 'evidence' && <Evidence runId={runId} notify={setToast} />}
@@ -433,6 +477,19 @@ function App() {
           </button>
         </div>
       )}
+
+      <KeyDialog
+        open={keyOpen}
+        value={keyDraft}
+        onChange={setKeyDraft}
+        onClose={() => setKeyOpen(false)}
+        onSave={saveKey}
+        onClear={() => {
+          clearKey();
+          setKeyOpen(false);
+        }}
+        hasKey={hasKey}
+      />
     </div>
   );
 }
@@ -442,37 +499,27 @@ function App() {
 /* ------------------------------------------------------------------ */
 function Dashboard({ runId, onNavigate, onOpenRun, health }) {
   const [metrics, setMetrics] = useState(null);
-  const [events, setEvents] = useState([]);
   const [history, setHistory] = useState([]);
   const [historyError, setHistoryError] = useState('');
   const [loading, setLoading] = useState(true);
   const [metricsError, setMetricsError] = useState(false);
-  const [eventsError, setEventsError] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let current = true;
     setLoading(true);
     setMetricsError(false);
-    setEventsError(false);
     setHistoryError('');
     Promise.allSettled([
       api('/metrics/aggregate'),
-      api(`/insights/events${runId ? `?run_id=${runId}` : ''}`),
       api('/research/runs?limit=100'),
-    ]).then(([aggregateResult, activityResult, historyResult]) => {
+    ]).then(([aggregateResult, historyResult]) => {
       if (!current) return;
       if (aggregateResult.status === 'fulfilled' && aggregateResult.value) {
         setMetrics(aggregateResult.value);
       } else {
         setMetrics(null);
         setMetricsError(true);
-      }
-      if (activityResult.status === 'fulfilled' && Array.isArray(activityResult.value)) {
-        setEvents(activityResult.value.slice(0, 6));
-      } else {
-        setEvents([]);
-        setEventsError(true);
       }
       if (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
         setHistory(historyResult.value);
@@ -489,194 +536,106 @@ function Dashboard({ runId, onNavigate, onOpenRun, health }) {
   const offers = health?.offers;
   const products = metrics?.total_products;
   const regions = metrics?.total_regions;
-  const latestRun = metrics?.latest_run;
+  const latestRun = history[0];
+  const latestStats = latestRun?.kind === 'deep' ? latestRun.coverage : latestRun?.metrics;
+  const latestSources = latestRun?.kind === 'deep' ? latestStats?.pages_fetched : latestStats?.urls_succeeded;
+  const latestOffers = latestRun?.kind === 'competitive' ? latestRun.offers_captured : null;
 
   return (
     <>
-      <header className="desk-hero">
-        <div className="desk-copy">
-          <div className="desk-kicker"><span className="hero-kicker-dot" /> COMPETITIVE INTELLIGENCE <span className="desk-kicker-divider">/</span> RESEARCH DESK</div>
-          <h1>Market signals,<br /><span>with receipts.</span></h1>
-          <p>Research competitors, compare what they offer, and trace every finding back to its source.</p>
-          <div className="desk-actions">
-            <button className="btn-primary" onClick={() => onNavigate('run')}>
-              <Icon name="target" size={16} /> Compare competitors <Icon name="arrow" size={15} />
-            </button>
-            <button className="desk-secondary" onClick={() => onNavigate('deep')}>
-              Explore a question <Icon name="arrow" size={14} />
-            </button>
-            <button className="desk-secondary" onClick={() => onNavigate('history')}>
-              History <span className="mono">{num(history.length)}</span>
-            </button>
+      <section className="landing-hero">
+        <div className="landing-copy">
+          <div className="landing-eyebrow"><span /> COMPETITOR RESEARCH · SOURCE LED</div>
+          <h1>Read the market<br />between the <em>moves.</em></h1>
+          <p>Track competitor offers and market signals from the original page to the final finding. Every claim stays connected to its source.</p>
+          <div className="landing-actions">
+            <button className="btn-primary" onClick={() => onNavigate('run')}>Start a comparison <Icon name="arrow" size={15} /></button>
+            <button className="editorial-link" onClick={() => onNavigate('deep')}>Explore a market question <Icon name="arrow" size={14} /></button>
           </div>
+          <div className="landing-caption"><span className={`connection-dot${health?.status === 'ok' ? ' connection-dot-live' : ''}`} /> {health?.status === 'ok' ? `Research system online · ${health.active_llm_provider || 'AI route ready'}` : 'Connecting to research system'}</div>
         </div>
 
-        <aside className="evidence-card" aria-label="Research evidence pipeline summary">
-          <div className="evidence-card-head">
-            <span>THE EVIDENCE PATH</span>
-            <span className={`hero-live ${health?.status === 'ok' ? 'hero-live-on' : ''}`}><i /> {health?.status === 'ok' ? 'CONNECTED' : 'CHECKING API'}</span>
-          </div>
-          <div className="evidence-line" aria-hidden="true"><span /></div>
-          <div className="evidence-stages">
-            <div className="evidence-stage">
-              <span className="evidence-node"><Icon name="search" size={15} /></span>
-              <small>01 / COLLECT</small>
-              <strong>Source pages</strong>
-              <span>{latestRun ? `${num(latestRun.urls_succeeded)} in latest run` : 'No runs yet'}</span>
+        <div className="landing-preview" aria-label="Preview of the research workspace">
+          <div className="preview-window">
+            <div className="preview-chrome">
+              <span className="preview-lights"><i /><i /><i /></span>
+              <span className="preview-address"><span className="site-brand-mark"><i /><i /><i /></span> scope / research desk</span>
+              <span className="preview-chrome-status"><i /> {latestRun ? pretty(latestRun.status) : 'READY'}</span>
             </div>
-            <div className="evidence-stage">
-              <span className="evidence-node"><Icon name="layers" size={15} /></span>
-              <small>02 / STRUCTURE</small>
-              <strong>Offers indexed</strong>
-              <span>{health ? num(offers) : '—'} in workspace</span>
-            </div>
-            <div className="evidence-stage">
-              <span className="evidence-node"><Icon name="pulse" size={15} /></span>
-              <small>03 / COMPARE</small>
-              <strong>Market signals</strong>
-              <span>{loading ? 'Updating…' : eventsError ? 'Unavailable' : `${num(events.length)} recent findings`}</span>
+            <div className="preview-body">
+              <aside className="preview-index">
+                <span>RESEARCH DESK</span>
+                <strong>{latestRun ? latestRun.kind === 'deep' ? 'Deep research' : 'Competitive study' : 'New study'}</strong>
+                <div className="preview-index-rule" />
+                <small>THE EVIDENCE PATH</small>
+                <div className={`preview-step${latestRun && latestSources ? ' is-done' : ''}`}><i /><span>Source pages</span></div>
+                <div className={`preview-step${latestOffers ? ' is-done' : ''}`}><i /><span>Structured offers</span></div>
+                <div className="preview-step"><i /><span>Market signals</span></div>
+              </aside>
+              <div className="preview-report">
+                <div className="preview-report-head">
+                  <div><small>{latestRun ? 'MOST RECENT STUDY' : 'YOUR PRIVATE RESEARCH WORKSPACE'}</small><h2>{latestRun?.title || 'A clearer view of your competitors.'}</h2></div>
+                  {latestRun && <button className="preview-open" onClick={() => onOpenRun(latestRun)} aria-label="Open latest saved research"><Icon name="arrow" size={17} /></button>}
+                </div>
+                <div className="preview-coverage">
+                  <div className="coverage-heading"><span>Evidence coverage</span><small>{latestRun ? `${num(latestSources)} pages captured` : 'Your captured evidence, at a glance'}</small></div>
+                  <div className="coverage-metrics">
+                    <div><strong>{latestRun && latestSources != null ? num(latestSources) : '—'}</strong><small>Source pages captured</small></div>
+                    <div><strong>{latestRun && latestOffers != null ? num(latestOffers) : '—'}</strong><small>Validated offers</small></div>
+                  </div>
+                </div>
+                <div className="preview-foot">
+                  <div><small>RESEARCH PATH</small><strong>{latestRun ? latestRun.kind === 'deep' ? 'Deep research' : 'Competitive intelligence' : 'Company · category · region'}</strong></div>
+                  <div><small>COMPUTE</small><strong>{latestRun?.duration_s ? `${num(latestRun.duration_s)} sec` : 'Usage tracked per run'}</strong></div>
+                  <div><small>SOURCE TRAIL</small><strong>Open evidence at the claim</strong></div>
+                </div>
+              </div>
             </div>
           </div>
-          <div className="evidence-card-foot">
-            <span>Every insight stays attached to its source</span>
-            <button onClick={() => onNavigate('evidence')} aria-label="Open evidence"><Icon name="arrow" size={14} /></button>
-          </div>
-        </aside>
-      </header>
-
-      <section className="stat-row desk-stats" aria-label="Research workspace totals">
-        <Stat label="Offers stored" value={health ? num(offers) : '—'} note="Structured price observations" />
-        <Stat label="Product observations" value={metrics ? num(products) : '—'} note="Across completed runs" />
-        <Stat label="Region checks" value={metrics ? num(regions) : '—'} note="Across completed runs" />
+          <div className="preview-caption"><span>BUILT AROUND THE EVIDENCE</span><span>DISCOVER → CAPTURE → VERIFY</span></div>
+        </div>
       </section>
 
-      {metricsError && (
-        <p className="data-warning" role="status">Workspace totals could not be loaded. Refresh to try again.</p>
-      )}
+      <section className="workspace-totals" aria-label="Research workspace totals">
+        <div className="totals-intro"><span>YOUR INTELLIGENCE FILE</span><small>{loading ? 'Updating workspace' : `${num(history.length)} saved studies`}</small></div>
+        <div className="total-item"><strong>{health ? num(offers) : '—'}</strong><span>Offers captured</span></div>
+        <div className="total-item"><strong>{metrics ? num(products) : '—'}</strong><span>Products observed</span></div>
+        <div className="total-item"><strong>{metrics ? num(regions) : '—'}</strong><span>Regions covered</span></div>
+        <button className="totals-refresh" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading} aria-label="Refresh workspace totals"><Icon name="refresh" size={15} /></button>
+      </section>
+      {metricsError && <p className="data-warning" role="status">Workspace totals could not be loaded. Refresh to try again.</p>}
 
-      <div className="split">
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Recent signals</h2>
-            <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}>
-              <Icon name="refresh" size={14} /> Refresh
-            </button>
-          </div>
-          {loading ? (
-            <div className="skeleton-list" aria-busy="true" aria-label="Loading signals">
-              {[0, 1, 2, 3].map((row) => (
-                <div className="skeleton-row" key={row}>
-                  <span className="skeleton skeleton-dot" />
-                  <span className="skeleton skeleton-text" style={{ width: `${52 + row * 9}%` }} />
-                </div>
-              ))}
-            </div>
-          ) : events.length ? (
-            <ul className="feed">
-              {events.map((event, index) => (
-                <li key={index}>
-                  <span className={`feed-dot feed-${event.severity || 'info'}`} />
-                  <div>
-                    <strong>{pretty(event.kind)}</strong>
-                    <p>{short(event.message, 120)}</p>
-                    <small>
-                      {event.region || 'cross-region'}
-                      {event.competitor ? ` · ${event.competitor}` : ''}
-                    </small>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : eventsError ? (
-            <Empty
-              title="Signals could not be loaded"
-              text="The API did not return the recent signal feed. Your research data has not been changed."
-              action="Try again"
-              onAction={() => setRefreshKey((key) => key + 1)}
-            />
-          ) : (
-            <Empty
-              title="No signals yet"
-              text="Signals appear once a research run has captured comparable evidence across runs."
-              action="Start a run"
-              onAction={() => onNavigate('run')}
-            />
-          )}
-        </section>
-
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Choose your starting point</h2>
-          </div>
-          <ul className="choice-list">
-            <li>
-              <button onClick={() => onNavigate('run')}>
-                <span className="choice-title">
-                  <Icon name="target" size={16} /> Compare competitors
-                </span>
-                <span className="choice-text">
-                  Compare a company against named competitors. Best for pricing, products, and regional changes.
-                </span>
-              </button>
-            </li>
-            <li>
-              <button onClick={() => onNavigate('deep')}>
-                <span className="choice-title">
-                  <Icon name="compass" size={16} /> Investigate a market question
-                </span>
-                <span className="choice-text">
-                  Start with a URL, topic, or comparison. Get a cited report and clear research gaps.
-                </span>
-              </button>
-            </li>
-            <li>
-              <button onClick={() => onNavigate('chat')}>
-                <span className="choice-title">
-                  <Icon name="chat" size={16} /> Ask your evidence
-                </span>
-                <span className="choice-text">
-                  Ask questions about captured research. Answers include sources and say when evidence is missing.
-                </span>
-              </button>
-            </li>
-          </ul>
-        </section>
-      </div>
-
-      <section className="panel run-history" id="run-history">
-        <div className="panel-head">
-          <div><h2>Recent runs</h2><p className="muted">Saved research with source quality and compute usage.</p></div>
-          <div className="history-head-actions">
-            <button className="btn-ghost" onClick={() => onNavigate('history')}>All history <Icon name="arrow" size={14} /></button>
-            <button className="btn-ghost" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading} aria-label="Refresh recent runs">
-              <Icon name="refresh" size={14} />
-            </button>
-          </div>
+      <section className="research-paths">
+        <div className="section-heading"><div><span className="eyebrow">CHOOSE YOUR ENTRY POINT</span><h2>Start with the question you have.</h2></div></div>
+        <div className="path-grid">
+          <button className="path-card path-card-compare" onClick={() => onNavigate('run')}>
+            <span className="path-symbol"><Icon name="target" size={19} /></span><span className="path-arrow"><Icon name="arrow" size={16} /></span>
+            <small>COMPETITIVE STUDY</small><strong>Compare a company<br />with its rivals.</strong><p>Track offers, regions, and pricing across named competitors.</p>
+          </button>
+          <button className="path-card path-card-deep" onClick={() => onNavigate('deep')}>
+            <span className="path-symbol"><Icon name="compass" size={19} /></span><span className="path-arrow"><Icon name="arrow" size={16} /></span>
+            <small>DEEP RESEARCH</small><strong>Investigate a market<br />question.</strong><p>Start from a topic or URL. Get cited findings and clear evidence gaps.</p>
+          </button>
         </div>
-        {historyError ? (
-          <Empty title="Saved history could not be loaded" text={historyError} action="Retry history" onAction={() => setRefreshKey((key) => key + 1)} />
+      </section>
+
+      <section className="recent-section" id="run-history">
+        <div className="section-heading recent-heading"><div><span className="eyebrow">CONTINUITY</span><h2>Recently researched</h2></div><button className="editorial-link" onClick={() => onNavigate('history')}>Open full history <Icon name="arrow" size={14} /></button></div>
+        {historyError ? <Empty title="Saved history could not be loaded" text={historyError} action="Retry history" onAction={() => setRefreshKey((key) => key + 1)} /> : loading ? (
+          <div className="recent-loading"><span className="archive-pulse" /> Loading saved research…</div>
         ) : history.length ? (
-          <div className="history-list">
-            {history.map((run) => {
+          <div className="recent-ledger">
+            {history.slice(0, 4).map((run, index) => {
               const quality = run.kind === 'deep' ? run.coverage : run.metrics;
-              const sources = run.kind === 'deep'
-                ? `${num(quality?.pages_fetched)} fetched · ${num(quality?.pages_failed)} failed · ${num(quality?.pages_skipped)} skipped`
-                : `${num(quality?.urls_succeeded)} fetched · ${num(quality?.urls_failed)} failed · ${num(quality?.extraction_failures)} extraction gaps`;
-              const tokens = quality?.estimated_tokens ? `~${num(quality.estimated_tokens)} tokens` : 'token estimate unavailable';
-              return (
-                <button className="history-row" key={`${run.kind}-${run.run_id}`} onClick={() => onOpenRun(run)}>
-                  <span className={`history-mark ${run.kind === 'deep' ? 'history-mark-deep' : ''}`}><Icon name={run.kind === 'deep' ? 'compass' : 'target'} size={15} /></span>
-                  <span className="history-main"><strong>{run.title}</strong><small>{run.kind === 'deep' ? 'Deep research' : 'Competitive run'} · {run.created_at ? new Date(run.created_at).toLocaleString() : 'time unavailable'}</small></span>
-                  <span className="history-quality"><small>{sources}</small><small>{num(run.duration_s)}s · {num(quality?.llm_calls)} LLM calls · {tokens}</small></span>
-                  <Badge tone={run.status === 'completed' ? 'good' : ['failed', 'interrupted'].includes(run.status) ? 'bad' : 'busy'}>{pretty(run.status)}</Badge>
-                  <Icon name="arrow" size={14} />
-                </button>
-              );
+              const sourceCount = run.kind === 'deep' ? quality?.pages_fetched : quality?.urls_succeeded;
+              return <button className="recent-ledger-row" key={`${run.kind}-${run.run_id}`} onClick={() => onOpenRun(run)}>
+                <span className="ledger-number">{String(index + 1).padStart(2, '0')}</span><span className="ledger-type">{run.kind === 'deep' ? 'DEEP' : 'COMPARE'}</span>
+                <strong>{run.title}</strong><span className="ledger-meta">{num(sourceCount)} sources · {num(run.duration_s)} sec</span>
+                <Badge tone={run.status === 'completed' ? 'good' : ['failed', 'interrupted'].includes(run.status) ? 'bad' : 'busy'}>{pretty(run.status)}</Badge><Icon name="arrow" size={15} />
+              </button>;
             })}
           </div>
-        ) : (
-          <Empty title="No saved runs yet" text="Completed and in-progress runs will appear here with source outcomes and usage." />
-        )}
+        ) : <div className="recent-empty"><span>No studies in the archive yet.</span><button className="editorial-link" onClick={() => onNavigate('run')}>Start your first study <Icon name="arrow" size={14} /></button></div>}
       </section>
     </>
   );
@@ -857,7 +816,7 @@ function ResearchPipeline({ status, events }) {
 /* ------------------------------------------------------------------ */
 /* competitive run                                                     */
 /* ------------------------------------------------------------------ */
-function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk }) {
+function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk, notify }) {
   const [company, setCompany] = useState('');
   const [website, setWebsite] = useState('');
   const [products, setProducts] = useState('');
@@ -938,9 +897,13 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk }) {
     event.preventDefault();
     const competitorNames = competitors.split(',').map((c) => c.trim()).filter(Boolean);
     const competitorUrlsList = competitorUrls.split(',').map((u) => u.trim()).filter(Boolean);
+    if (competitorNames.length && competitorNames.length !== competitorUrlsList.length) {
+      notify?.('Add a website for each competitor, in the same order as the names. Guessed .com URLs are not used.');
+      return;
+    }
     const competitorsData = competitorNames.map((name, i) => ({
       name,
-      website: competitorUrlsList[i] || `https://${name.toLowerCase().replace(/\s+/g, '')}.com`,
+      website: competitorUrlsList[i],
     }));
     onStart({
       company,
@@ -983,7 +946,7 @@ function CompetitiveRun({ onStart, runId, onClearRun, onViewEvidence, onAsk }) {
             <label className="field">
               <span>Competitor websites</span>
               <input value={competitorUrls} onChange={(e) => setCompetitorUrls(e.target.value)} placeholder="https://obsidian.md, https://coda.io, https://roamresearch.com" />
-              <small>Comma separated URLs (matching order of names above). Optional — we'll guess if omitted.</small>
+              <small>Comma separated URLs, in the same order as the names. Required whenever competitor names are entered.</small>
             </label>
 
             <fieldset className="field">
@@ -1128,7 +1091,7 @@ const DEEP_TABS = [
   ['sources', 'Sources'],
 ];
 
-function DeepResearch({ result, onResult, onChat, notify }) {
+function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
   const [mode, setMode] = useState('url');
   const [url, setUrl] = useState('');
   const [topic, setTopic] = useState('');
@@ -1156,6 +1119,7 @@ function DeepResearch({ result, onResult, onChat, notify }) {
       onResult(data);
       setTab('report');
     } catch (error) {
+      if (error.code === 'auth') onNeedKey?.();
       notify(error.message);
     } finally {
       setBusy(false);
@@ -1163,6 +1127,7 @@ function DeepResearch({ result, onResult, onChat, notify }) {
   };
 
   const coverage = result?.coverage;
+  const searchLive = health?.deep_research?.search !== false;
 
   return (
     <>
@@ -1186,6 +1151,13 @@ function DeepResearch({ result, onResult, onChat, notify }) {
             </button>
           ))}
         </div>
+
+        {!searchLive && (mode === 'topic' || mode === 'compare') && (
+          <p className="data-warning" role="status">
+            Web search is off on the API, so topic and comparison runs cannot discover competitor sites. Set
+            <span className="mono"> DEEP_SEARCH_ENABLED=true</span> on the Northflank Environment page and redeploy.
+          </p>
+        )}
 
         <form className="form form-grid" onSubmit={submit}>
           {mode === 'url' && (
@@ -1240,10 +1212,10 @@ function DeepResearch({ result, onResult, onChat, notify }) {
           </div>
 
           <div className="field-wide">
-            <button className="btn-primary" disabled={busy}>
+            <button className={`btn-primary${busy ? ' is-busy' : ''}`} disabled={busy}>
               {busy ? 'Researching…' : 'Start deep research'}
             </button>
-            <small className="muted">Runs synchronously. Larger page budgets take longer.</small>
+            <small className="muted">This run waits on the API. A larger page budget can take several minutes.</small>
           </div>
         </form>
       </section>
