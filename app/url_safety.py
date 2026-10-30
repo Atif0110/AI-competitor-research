@@ -34,12 +34,12 @@ def is_public_http_url(value: str) -> bool:
         return False
 
 
-def safe_http_get(url: str, **kwargs):
+def safe_http_get(url: str, *, max_redirects: int = 5, **kwargs):
     """GET a public URL, validating every redirect before following it."""
     import requests
 
     current = url
-    for _ in range(6):
+    for redirect_count in range(max_redirects + 1):
         if not is_public_http_url(current):
             raise ValueError("blocked non-public or invalid URL")
         response = requests.get(current, allow_redirects=False, **kwargs)
@@ -48,5 +48,8 @@ def safe_http_get(url: str, **kwargs):
         location = response.headers.get("Location")
         if not location:
             return response
+        response.close()
+        if redirect_count >= max_redirects:
+            break
         current = urljoin(current, location)
     raise ValueError("too many redirects")

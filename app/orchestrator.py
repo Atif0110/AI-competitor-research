@@ -25,7 +25,7 @@ import logging
 import re
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -235,48 +235,47 @@ class Pipeline:
         urls: List[str] = []
         errors: list = []
         candidates_by_entity: list[tuple[Competitor, List[str]]] = []
+        entities = target.all_entities()
 
-        for ent in target.all_entities():
-            self._progress(
-                "discovery_entity_started",
-                company=ent.name,
-                website=ent.website,
-            )
-            if demo:
-                found = product_urls_for(
-                    ent.name,
-                    target.regions,
-                )
-            else:
-                try:
-                    found = discover_urls_for_entity(
-                        ent.website
-                    )
-
-                    # Bound the amount of work before region fan-out. Discovery
-                    # ranks pricing/plans first, then the best product pages.
+        def discover_one(ent: Competitor) -> tuple[Competitor, List[str], Optional[str]]:
+            try:
+                if demo:
+                    found = product_urls_for(ent.name, target.regions)
+                else:
+                    found = discover_urls_for_entity(ent.website)
+                    # Keep enough candidates to preserve pricing and product
+                    # coverage while bounding later regional fan-out.
                     page_limit = max(1, min(settings.competitive_pages_per_entity, 8))
                     found = found[:page_limit]
+                    logger.info("discovered %d URLs for %s", len(found), ent.name)
+                return ent, dedupe_urls(found), None
+            except Exception as exc:
+                logger.exception("discovery failed for %s", ent.name)
+                return ent, [], f"discovery {ent.name}: {type(exc).__name__}"
 
-                    logger.info(
-                        "discovered %d URLs for %s",
-                        len(found),
-                        ent.name,
-                    )
+        for ent in entities:
+            self._progress("discovery_entity_started", company=ent.name, website=ent.website)
 
-                except Exception as exc:
-                    errors.append(
-                        f"discovery {ent.name}: {exc}"
-                    )
-                    found = []
+        # A slow site no longer blocks discovery of every company after it.
+        # The small fixed pool bounds resource use and keeps model calls serial.
+        workers = max(1, min(4, len(entities)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="research-discovery") as pool:
+            futures = {pool.submit(discover_one, ent): ent for ent in entities}
+            for future in as_completed(futures):
+                ent, found, error = future.result()
+                if error:
+                    errors.append(error)
+                candidates_by_entity.append((ent, found))
+                self._progress(
+                    "discovery_entity_complete",
+                    company=ent.name,
+                    urls_discovered=len(found),
+                )
 
-            found = dedupe_urls(found)
-            candidates_by_entity.append((ent, found))
-            self._progress(
-                "discovery_entity_complete",
-                company=ent.name,
-                urls_discovered=len(found),
-            )
+        # Parallel completions are nondeterministic; restore the request order
+        # so URL ranking and saved evidence remain predictable across runs.
+        entity_order = {ent.name: index for index, ent in enumerate(entities)}
+        candidates_by_entity.sort(key=lambda pair: entity_order.get(pair[0].name, 0))
 
         # A focus product is a ranking hint, not a hard requirement: URL paths
         # often use product slugs/collections that differ from the user's

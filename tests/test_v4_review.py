@@ -183,10 +183,13 @@ def test_run_id_sanitisation():
     assert is_safe_run_id("") is False
 
 
-def test_undercut_invalid_region_422():
+def test_undercut_invalid_region_422(monkeypatch):
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from app.api import app
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "api_key_required", False)
 
     client = TestClient(app)
     r = client.get("/insights/undercut?region=XYZ")
@@ -195,10 +198,13 @@ def test_undercut_invalid_region_422():
     assert r2.status_code == 200
 
 
-def test_report_run_id_sanitised_before_fs():
+def test_report_run_id_sanitised_before_fs(monkeypatch):
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from app.api import app
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "api_key_required", False)
 
     client = TestClient(app)
     r = client.get("/reports/..%2F..%2Fetc%2Fpasswd")

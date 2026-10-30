@@ -22,6 +22,8 @@ from app.research.fetching import Fetcher, _USER_AGENT
 from app.research.sources import SearchBackend, build_search
 from app.url_safety import is_public_http_url, safe_http_get
 
+_DISCOVERY_TIMEOUT_SECONDS = min(settings.request_timeout_seconds, 5)
+
 logger = logging.getLogger(__name__)
 
 # Common sitemap locations to try
@@ -195,7 +197,7 @@ def fetch_sitemap_urls(base_url: str, fetcher: Optional[object] = None, max_urls
             response = safe_http_get(
                 url,
                 headers={"User-Agent": "AICompetitorResearch/5.0"},
-                timeout=15,
+                timeout=_DISCOVERY_TIMEOUT_SECONDS,
             )
             if response.status_code == 200 and response.text:
                 urls = _parse_sitemap(response.text, max_urls)
@@ -212,7 +214,7 @@ def fetch_sitemap_urls(base_url: str, fetcher: Optional[object] = None, max_urls
         response = safe_http_get(
             robots_url,
             headers={"User-Agent": "AICompetitorResearch/5.0"},
-            timeout=10,
+            timeout=_DISCOVERY_TIMEOUT_SECONDS,
         )
         if response.status_code == 200:
             for line in response.text.splitlines():
@@ -224,7 +226,7 @@ def fetch_sitemap_urls(base_url: str, fetcher: Optional[object] = None, max_urls
                             response = safe_http_get(
                                 sitemap_url,
                                 headers={"User-Agent": "AICompetitorResearch/5.0"},
-                                timeout=15,
+                                timeout=_DISCOVERY_TIMEOUT_SECONDS,
                             )
                             if response.status_code == 200:
                                 urls = _parse_sitemap(response.text, max_urls)

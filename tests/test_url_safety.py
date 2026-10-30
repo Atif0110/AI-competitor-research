@@ -26,6 +26,18 @@ def test_public_website_is_allowed_and_normalized():
     assert target.website == "https://acme.example.com"
 
 
+def test_research_target_collection_sizes_are_bounded():
+    competitors = [
+        {"name": f"Company {index}", "website": f"https://company{index}.example.com"}
+        for index in range(51)
+    ]
+    with pytest.raises(ValidationError):
+        CompetitorTarget(company="Acme", website="https://acme.example.com", competitors=competitors)
+
+    with pytest.raises(ValidationError):
+        DeepResearchRequest(mode="compare", competitors=["Company"] * 11)
+
+
 @pytest.mark.parametrize("url", ["http://127.0.0.1/", "http://localhost/"])
 def test_competitor_private_site_rejected(url):
     with pytest.raises(ValidationError):
@@ -43,6 +55,10 @@ def test_safe_get_blocks_private_redirect(monkeypatch):
         is_redirect = True
         is_permanent_redirect = False
         headers = {"Location": "http://169.254.169.254/latest/meta-data/"}
+
+        @staticmethod
+        def close():
+            return None
 
     def fake_get(*args, **kwargs):
         return Response()

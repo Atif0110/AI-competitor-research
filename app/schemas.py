@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -37,7 +37,7 @@ class Availability(str, Enum):
 
 class Competitor(BaseModel):
     name: str = Field(min_length=1, max_length=150)
-    website: str = Field(min_length=4)
+    website: str = Field(min_length=4, max_length=2048)
 
     @field_validator("website")
     @classmethod
@@ -56,10 +56,10 @@ class CompetitorTarget(BaseModel):
 
     (`ResearchTarget` is an alias; both names work in configs and API payloads.)"""
     company: str = Field(min_length=1, max_length=150)
-    website: str = Field(min_length=4)
-    regions: List[Region] = Field(default_factory=lambda: [Region.US])
-    focus_products: List[str] = Field(default_factory=list)
-    competitors: List[Competitor] = Field(default_factory=list)
+    website: str = Field(min_length=4, max_length=2048)
+    regions: List[Region] = Field(default_factory=lambda: [Region.US], max_length=9)
+    focus_products: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=50)
+    competitors: List[Competitor] = Field(default_factory=list, max_length=50)
 
     @field_validator("website")
     @classmethod

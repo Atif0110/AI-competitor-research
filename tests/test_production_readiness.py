@@ -143,19 +143,23 @@ def test_provider_quota_error_triggers_cooldown(monkeypatch):
     assert "apinex" in client.telemetry()["cooldown_providers"]
 
 
-def test_report_run_id_sanitised_before_fs():
+def test_report_run_id_sanitised_before_fs(monkeypatch):
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+    from app.config import settings
 
+    monkeypatch.setattr(settings, "api_key_required", False)
     client = TestClient(app)
     assert client.get("/reports/..%2F..%2Fetc%2Fpasswd").status_code in (404, 422)
     assert client.get("/reports/not..valid..run").status_code == 422
     assert client.get("/reports/does-not-exist-run").status_code == 404
 
 
-def test_evidence_content_endpoint_is_routable():
+def test_evidence_content_endpoint_is_routable(monkeypatch):
     """/evidence/content must not be shadowed by /evidence/{run_id}."""
-    monkey = None
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "api_key_required", False)
     client = TestClient(app)
     response = client.get("/evidence/content?source_url=https://example.com/p")
     assert response.status_code == 404  # routed to the endpoint, evidence missing

@@ -13,11 +13,12 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+from fastapi.responses import JSONResponse
 
 from app.analysis.insights import InsightsEngine
 from app.config import settings
@@ -49,10 +50,10 @@ class ReviewQueryRequest(BaseModel):
 
 class DeepResearchRequest(BaseModel):
     mode: str = Field(default="url", pattern=r"^(url|topic|compare)$")
-    url: Optional[str] = None
-    topic: Optional[str] = None
+    url: Optional[str] = Field(default=None, max_length=2048)
+    topic: Optional[str] = Field(default=None, max_length=200)
     company: Optional[str] = Field(default=None, max_length=200)
-    competitors: list[str] = Field(default_factory=list)
+    competitors: list[Annotated[str, Field(min_length=1, max_length=150)]] = Field(default_factory=list, max_length=10)
     question: str = Field(default="", max_length=1000)
     max_pages: int = Field(default=0, ge=0, le=60)
     max_depth: int = Field(default=0, ge=0, le=4)
@@ -116,6 +117,12 @@ def _require_public_research_or_api_key(
     if settings.public_workspace_mode and (public_write or public_job_read):
         return
     _require_api_key(x_api_key)
+
+
+def _remove_finished_job(job_id: str) -> None:
+    """Keep only active workers in RAM; durable job snapshots live in storage."""
+    with _jobs_lock:
+        _jobs.pop(job_id, None)
 
 
 def _research_rate_limit(request: Request) -> None:
@@ -206,6 +213,7 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
                 chat_ready=False,
                 chat_error=None,
             )
+            _remove_finished_job(job_id)
             return
         chat_ready = False
         chat_error = None
@@ -218,14 +226,21 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
             })
             _index_competitive_run_for_chat(_deep_pipeline().documents, job_id, target)
             chat_ready = True
-        except Exception as exc:
-            chat_error = str(exc)[:300]
+        except Exception:
+            chat_error = "Evidence indexing failed; open the captured evidence and retry chat later."
             logger.exception("could not index competitive run %s for grounded chat", job_id)
         _set_job(job_id, status="completed", result=result_payload, events=events,
                  chat_ready=chat_ready, chat_error=chat_error)
-    except Exception as exc:
+        _remove_finished_job(job_id)
+    except Exception:
         logger.exception("research job %s failed", job_id)
-        _set_job(job_id, status="failed", error=str(exc), events=events)
+        _set_job(
+            job_id,
+            status="failed",
+            error="Research failed unexpectedly. Retry the run; contact the operator if it continues.",
+            events=events,
+        )
+        _remove_finished_job(job_id)
 
 
 def _index_competitive_run_for_chat(documents, run_id: str, target: CompetitorTarget) -> None:
@@ -345,6 +360,26 @@ def create_app():
         logger.error("API_KEY_REQUIRED=true but API_KEY is missing; live service will reject protected endpoints")
 
     app = FastAPI(title=settings.app_name, version="5.0.0", docs_url="/docs", redoc_url="/redoc")
+
+    @app.middleware("http")
+    async def require_auth_for_private_reads(request: Request, call_next):
+        # Public mode intentionally exposes the visitor workspace. When an
+        # operator switches to private mode, protect every read route too,
+        # including history, reports, metrics, and OpenAPI documentation.
+        if (
+            not settings.public_workspace_mode
+            and request.method in {"GET", "HEAD"}
+            and request.url.path != "/health"
+        ):
+            try:
+                _require_api_key(request.headers.get("x-api-key"))
+            except HTTPException as exc:
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                )
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -400,9 +435,10 @@ def create_app():
         _validate_public_target(target)
         try:
             return _pipeline.run(target)
-        except Exception as e:
-            logger.exception("research run failed")
-            raise HTTPException(status_code=500, detail=str(e))
+        except Exception:
+            error_id = uuid.uuid4().hex[:12]
+            logger.exception("research run failed (reference=%s)", error_id)
+            raise HTTPException(status_code=500, detail=f"Research failed unexpectedly. Reference: {error_id}")
 
     @app.post("/research/jobs", dependencies=[Depends(_require_public_research_or_api_key), Depends(_research_rate_limit)])
     def create_research_job(target: JobCreateRequest, background_tasks: BackgroundTasks):
@@ -478,9 +514,10 @@ def create_app():
         )
         try:
             result = _deep_pipeline().run(request)
-        except Exception as exc:
-            logger.exception("deep research failed")
-            raise HTTPException(status_code=500, detail=str(exc))
+        except Exception:
+            error_id = uuid.uuid4().hex[:12]
+            logger.exception("deep research failed (reference=%s)", error_id)
+            raise HTTPException(status_code=500, detail=f"Research failed unexpectedly. Reference: {error_id}")
         return json.loads(result.model_dump_json())
 
     @app.get("/research/deep/runs")

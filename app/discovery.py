@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from typing import Iterable, List
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -37,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 MAX_DISCOVERY_CANDIDATES = 24
 FIRECRAWL_MAP_LIMIT = 200
+DISCOVERY_REQUEST_TIMEOUT_SECONDS = 4
+DISCOVERY_SITEMAP_DOCUMENT_LIMIT = 8
 
 
 # ---------------------------------------------------------------------------
@@ -465,36 +468,10 @@ def _resolve_allowed_hosts(
     if not hosts:
         return hosts
 
-    try:
-        import requests
-
-        response = safe_http_get(
-            website,
-            timeout=settings.request_timeout_seconds,
-            headers={
-                "User-Agent": "cintel-research/1.0",
-            },
-        )
-
-        final_host = _hostname(
-            response.url
-        )
-
-        if final_host:
-            hosts.add(final_host)
-
-        logger.info(
-            "resolved discovery hosts for %s: %s",
-            website,
-            sorted(hosts),
-        )
-
-    except Exception as exc:
-        logger.info(
-            "could not resolve redirect host for %s: %s",
-            website,
-            exc,
-        )
+    # Do not fetch the homepage here. Discovery immediately checks robots.txt
+    # and sitemaps, and the old preliminary full-page GET could block for the
+    # full request timeout before useful work even started.
+    logger.info("starting discovery for %s (seed host: %s)", website, sorted(hosts))
 
     return hosts
 
@@ -564,7 +541,7 @@ def discover_firecrawl(
             ),
             "Content-Type": "application/json",
         },
-        timeout=settings.request_timeout_seconds,
+        timeout=min(settings.request_timeout_seconds, 10),
     )
 
     if response.status_code != 200:
@@ -639,7 +616,7 @@ def _fetch(url: str) -> str:
 
     response = safe_http_get(
         url,
-        timeout=settings.request_timeout_seconds,
+        timeout=min(settings.request_timeout_seconds, DISCOVERY_REQUEST_TIMEOUT_SECONDS),
         headers={
             "User-Agent": "cintel-research/1.0",
         },
@@ -677,6 +654,7 @@ def discover_sitemaps(
     allowed_hosts = _resolve_allowed_hosts(
         website
     )
+    started = time.monotonic()
 
     sitemap_urls: List[str] = []
 
@@ -729,6 +707,8 @@ def discover_sitemaps(
         if (
             sitemap in visited
             or depth > 2
+            or len(visited) >= DISCOVERY_SITEMAP_DOCUMENT_LIMIT
+            or time.monotonic() - started >= DISCOVERY_REQUEST_TIMEOUT_SECONDS * 6
         ):
             return
 
@@ -786,6 +766,8 @@ def discover_sitemaps(
 
     for sitemap in sitemap_urls:
         process(sitemap)
+        if len(visited) >= DISCOVERY_SITEMAP_DOCUMENT_LIMIT or time.monotonic() - started >= DISCOVERY_REQUEST_TIMEOUT_SECONDS * 6:
+            break
 
     # The supplied website itself is always a candidate.
     if is_product_url(website):
