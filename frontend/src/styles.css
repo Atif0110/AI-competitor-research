@@ -2887,6 +2887,9 @@ body {
 .evidence-item strong { max-width: 100%; overflow: hidden; color: #eee8de; font: 500 16px/1.2 var(--display); text-overflow: ellipsis; white-space: nowrap; }
 .evidence-item small { max-width: 100%; overflow: hidden; color: #8c857a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-item-price { position: absolute; top: 13px; right: 13px; color: #e5c17e; font: 10px var(--mono); }
+.evidence-source-attribution { display: grid; gap: 8px; margin: 18px 0; padding: 14px 16px; border: 1px solid #393329; border-radius: 12px; background: #13110e; }
+.evidence-source-attribution span { color: #a99d8a; font: 8px var(--mono); letter-spacing: .1em; }
+.evidence-source-attribution strong { color: #e9dfcf; font-size: 12px; font-weight: 500; }
 .evidence-list-empty { display: grid; gap: 7px; padding: 22px 17px; color: #e2dbd0; font-size: 12px; }
 .evidence-list-empty p { color: #817a70; font-size: 11px; line-height: 1.6; }
 .evidence-loading { display: grid; gap: 1px; }

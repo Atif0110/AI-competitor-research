@@ -396,17 +396,20 @@ class Pipeline:
         url: str,
         entities: List[Competitor],
     ) -> Optional[str]:
-        canon = canonical_url(url)
-
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+        if host.startswith("www."):
+            host = host[4:]
+        matches: list[tuple[int, str]] = []
         for entity in entities:
-            base = canonical_url(
-                entity.website
-            )
+            base_host = (urlparse(entity.website).hostname or "").lower().rstrip(".")
+            if base_host.startswith("www."):
+                base_host = base_host[4:]
+            # Match a host boundary, never a textual URL prefix: example.com.evil
+            # must not inherit example.com's company attribution.
+            if host and base_host and (host == base_host or host.endswith("." + base_host)):
+                matches.append((len(base_host), entity.name))
 
-            if canon.startswith(base):
-                return entity.name
-
-        return None
+        return max(matches, default=(0, None), key=lambda match: match[0])[1]
 
     def _finalize_offer(
         self,

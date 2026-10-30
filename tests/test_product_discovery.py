@@ -108,6 +108,20 @@ def test_offer_validation_rejects_off_focus_primary_and_accepts_rival_equivalent
     )
 
 
+def test_company_attribution_matches_host_boundaries_not_url_prefixes():
+    entities = CompetitorTarget(
+        company="Acme",
+        website="https://www.acme.example",
+        competitors=[
+            {"name": "Other", "website": "https://other.example"},
+        ],
+    ).all_entities()
+
+    assert Pipeline._entity_for_url("https://acme.example/products/one", entities) == "Acme"
+    assert Pipeline._entity_for_url("https://shop.acme.example/products/one", entities) == "Acme"
+    assert Pipeline._entity_for_url("https://acme.example.attacker.test/products/one", entities) is None
+
+
 def test_phone_series_focus_matches_model_variants_and_maps_to_rival_phones():
     from app.focus import focus_matches
 

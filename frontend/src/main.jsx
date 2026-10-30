@@ -1303,14 +1303,24 @@ function Evidence({ runId, notify }) {
   }, [region, search, runId]);
 
   const items = useMemo(() => [
-    ...sources.map((source) => ({
-      kind: 'source',
-      key: `source:${source.source_url}:${source.content_hash || ''}`,
-      title: source.source_url,
-      subtitle: `${num(source.size)} chars captured`,
-      url: source.source_url,
-      source,
-    })),
+    ...sources.map((source) => {
+      const sourceUrl = (source.source_url || '').replace(/\/$/, '').toLowerCase();
+      const sourceOffers = rows.filter((offer) =>
+        (offer.url || '').replace(/\/$/, '').toLowerCase() === sourceUrl,
+      );
+      const offerSummary = sourceOffers.length
+        ? `${sourceOffers.length} offer${sourceOffers.length === 1 ? '' : 's'} · ${[...new Set(sourceOffers.map((offer) => offer.competitor || offer.brand || 'Company unknown'))].join(', ')}`
+        : 'No offer extracted';
+      return {
+        kind: 'source',
+        key: `source:${source.source_url}:${source.content_hash || ''}`,
+        title: source.source_url,
+        subtitle: `${num(source.size)} chars · ${offerSummary}`,
+        url: source.source_url,
+        source,
+        offers: sourceOffers,
+      };
+    }),
     ...rows.map((offer, index) => ({
       kind: 'offer',
       key: `offer:${offer.run_id || runId || 'all'}:${offer.url || index}:${offer.product_name}`,
@@ -1387,6 +1397,7 @@ function Evidence({ runId, notify }) {
               <div className="evidence-detail-top"><Badge tone="good">SOURCE CAPTURED</Badge><span className="mono">{selectedItem.source.scraped_at ? new Date(selectedItem.source.scraped_at).toLocaleString() : 'Capture time unavailable'}</span></div>
               <h2>{short(selectedItem.source.source_url, 110)}</h2>
               <p className="evidence-detail-lede">A source page fetched for this research. The captured text is retained so findings can be traced to the original evidence.</p>
+              <div className="evidence-source-attribution"><span>EXTRACTION FROM THIS PAGE</span>{selectedItem.offers?.length ? selectedItem.offers.map((offer) => <strong key={`${offer.url}:${offer.product_name}`}>{offer.competitor || offer.brand || 'Company unknown'} · {offer.product_name} · {money(offer.price, offer.currency)}</strong>) : <strong>No priced offer was extracted from this page.</strong>}</div>
               <div className="evidence-contribution"><div><span>CAPTURED CONTENT</span><strong>{num(selectedItem.source.size)} characters</strong></div><div><span>CONTENT HASH</span><strong className="mono">{short(selectedItem.source.content_hash, 28)}</strong></div></div>
               <div className="evidence-detail-actions"><button className="btn-primary" onClick={() => openSource(selectedItem.source)}><Icon name="doc" size={15} /> Inspect captured text</button><a className="btn-ghost" href={selectedItem.source.source_url} target="_blank" rel="noreferrer">Open original page <Icon name="external" size={14} /></a></div>
               {sourceText && <div className="evidence-captured-text"><div className="evidence-text-heading"><strong>Captured page text</strong>{sourceLoading && <small>Loading…</small>}</div><pre className="source-content">{sourceText}</pre></div>}
@@ -1395,8 +1406,8 @@ function Evidence({ runId, notify }) {
             <>
               <div className="evidence-detail-top"><Badge tone="good">CAPTURED OFFER</Badge><span className="mono">{selectedItem.offer.scraped_at ? new Date(selectedItem.offer.scraped_at).toLocaleString() : 'Capture time unavailable'}</span></div>
               <div className="evidence-offer-heading"><div><span className="eyebrow">{selectedItem.offer.competitor || selectedItem.offer.brand || 'Company not identified'}</span><h2>{selectedItem.offer.product_name}</h2></div><strong>{money(selectedItem.offer.price, selectedItem.offer.currency)}</strong></div>
-              <p className="evidence-detail-lede">This offer was extracted from a fetched competitor page. Verify the original listing before using it in a decision.</p>
-              <div className="evidence-contribution"><div><span>COMPANY</span><strong>{selectedItem.offer.competitor || selectedItem.offer.brand || 'Not identified'}</strong></div><div><span>REGION</span><strong>{selectedItem.offer.region || 'Not specified'}</strong></div><div><span>AVAILABILITY</span><strong>{pretty(selectedItem.offer.availability) || 'Unknown'}</strong></div><div><span>EXTRACTION CONFIDENCE</span><strong>{selectedItem.offer.extraction_confidence != null ? `${Math.round(selectedItem.offer.extraction_confidence * 100)}%` : 'Not reported'}</strong></div></div>
+              <p className="evidence-detail-lede">This offer was extracted from the source URL below. The company label is the company assigned to that source in this run; the brand is the product brand reported by the page.</p>
+              <div className="evidence-contribution"><div><span>COMPANY</span><strong>{selectedItem.offer.competitor || 'Not identified'}</strong></div><div><span>PRODUCT BRAND</span><strong>{selectedItem.offer.brand || 'Not reported'}</strong></div><div><span>REGION</span><strong>{selectedItem.offer.region || 'Not specified'}</strong></div><div><span>AVAILABILITY</span><strong>{pretty(selectedItem.offer.availability) || 'Unknown'}</strong></div><div><span>EXTRACTION CONFIDENCE</span><strong>{selectedItem.offer.extraction_confidence != null ? `${Math.round(selectedItem.offer.extraction_confidence * 100)}%` : 'Not reported'}</strong></div></div>
               <div className="evidence-detail-source"><span>SOURCE URL</span><a href={selectedItem.offer.url} target="_blank" rel="noreferrer">{selectedItem.offer.url || 'No source URL saved'} <Icon name="external" size={14} /></a></div>
               <div className="evidence-detail-actions">{selectedItem.offer.url && <button className="btn-primary" onClick={() => openOfferSource(selectedItem.offer)}><Icon name="doc" size={15} /> {sourceLoading ? 'Loading source…' : 'Inspect captured text'}</button>}</div>
               {sourceText && <div className="evidence-captured-text"><div className="evidence-text-heading"><strong>Captured page text</strong>{sourceLoading && <small>Loading…</small>}</div><pre className="source-content">{sourceText}</pre></div>}
