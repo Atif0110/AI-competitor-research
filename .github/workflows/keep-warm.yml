@@ -12,5 +12,20 @@ jobs:
     steps:
       - name: Ping Health Endpoint
         run: |
-          curl -fsS https://p01--ai-research-platform--tqfz8cfnnfsv.code.run/health
+          health_url="https://p01--ai-research-platform--tqfz8cfnnfsv.code.run/health"
+          echo "Checking API health at ${health_url}"
+          if ! response="$(curl --silent --show-error --fail-with-body \
+            --connect-timeout 10 --max-time 20 \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            "${health_url}")"; then
+            echo "::error title=API unavailable::Northflank did not return a healthy API after retries. Check the service's deployment status and runtime logs."
+            exit 1
+          fi
+
+          if ! printf '%s' "${response}" | jq -e '.status == "ok"' >/dev/null; then
+            echo "::error title=API health check failed::The API responded, but its health payload did not report status=ok."
+            printf '%s\n' "${response}"
+            exit 1
+          fi
+
           echo "API health check successful at $(date)"
