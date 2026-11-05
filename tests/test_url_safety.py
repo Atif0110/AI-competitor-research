@@ -225,6 +225,7 @@ def test_public_workspace_keeps_browser_scraper_behind_pinned_proxy(monkeypatch)
             self.route_handler = handler
 
         def goto(self, *_args, **_kwargs):
+            self.goto_options = _kwargs
             return None
 
         def wait_for_timeout(self, _milliseconds):
@@ -287,7 +288,8 @@ def test_public_workspace_keeps_browser_scraper_behind_pinned_proxy(monkeypatch)
     }
     assert launch_options["headless"] is True
     assert launch_options["channel"] == "chromium"
-    assert 1_000 <= launch_options["timeout"] <= 30_000
+    assert 1_000 <= launch_options["timeout"] <= 20_000
+    assert 1_000 <= page.goto_options["timeout"] <= 20_000
     assert "--disable-quic" in launch_options["args"]
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launch_options["args"]
 
@@ -351,6 +353,51 @@ def test_public_browser_sessions_are_serialized():
         list(pool.map(use_browser_slot, range(4)))
 
     assert maximum_active == 1
+
+
+def test_public_browser_failure_falls_back_after_one_attempt(monkeypatch):
+    from app.config import settings
+    from app.scrapers.base import BaseScraper, RetryPolicy, ScrapeError, ScrapedPage
+    from app.scrapers.orchestrator import ScraperOrchestrator
+
+    monkeypatch.setattr(settings, "public_workspace_mode", True)
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    monkeypatch.setattr(settings, "api_key_required", True)
+    monkeypatch.setattr(settings, "rate_limit_min_interval", 0)
+
+    class Browser(BaseScraper):
+        name = "playwright"
+        public_max_attempts = 1
+
+        def __init__(self):
+            self.calls = 0
+
+        def _fetch_once(self, url, proxy, region=None):
+            self.calls += 1
+            raise ScrapeError("browser timed out")
+
+    class Basic(BaseScraper):
+        name = "basic"
+
+        def __init__(self):
+            self.calls = 0
+
+        def _fetch_once(self, url, proxy, region=None):
+            self.calls += 1
+            return ScrapedPage(url=url, markdown="Public page content", region=region)
+
+    browser = Browser()
+    basic = Basic()
+    orchestrator = ScraperOrchestrator([browser, basic])
+    orchestrator.retry_policy = RetryPolicy(max_retries=3, base_seconds=0)
+
+    page, log = orchestrator.fetch("https://example.com/", region="US")
+
+    assert page.markdown == "Public page content"
+    assert browser.calls == 1
+    assert basic.calls == 1
+    assert log.scrapers_tried == ["playwright", "basic"]
+    assert log.final_scraper == "basic"
 
 
 def test_pinned_connect_uses_validated_numeric_address(monkeypatch):

@@ -40,8 +40,12 @@ class ScraperOrchestrator:
         last_error: Optional[Exception] = None
 
         for scraper in self.scrapers:
+            max_attempts = self.retry_policy.max_retries
+            public_max_attempts = getattr(scraper, "public_max_attempts", None)
+            if public_fetch_guard_enabled() and public_max_attempts is not None:
+                max_attempts = max(1, min(max_attempts, int(public_max_attempts)))
             attempts = 0
-            while attempts < self.retry_policy.max_retries:
+            while attempts < max_attempts:
                 attempts += 1
                 self.rate_limiter.wait(host)
                 proxy = self._pick_proxy(region, log, url)
@@ -60,8 +64,8 @@ class ScraperOrchestrator:
                     if scraper.name not in log.scrapers_tried:
                         log.scrapers_tried.append(scraper.name)
                     logger.warning("[%s] attempt %d/%d failed for %s: %s",
-                                   scraper.name, attempts, self.retry_policy.max_retries, url, e)
-                    if attempts < self.retry_policy.max_retries:
+                                   scraper.name, attempts, max_attempts, url, e)
+                    if attempts < max_attempts:
                         time.sleep(self.retry_policy.backoff(attempts))
 
         log.status = "failed"

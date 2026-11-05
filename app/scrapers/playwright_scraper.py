@@ -20,6 +20,7 @@ def _browser_slot(guarded: bool):
 
 class PlaywrightScraper(BaseScraper):
     name = "playwright"
+    public_max_attempts = 1
 
     def _fetch_once(
         self,
@@ -30,6 +31,8 @@ class PlaywrightScraper(BaseScraper):
         if not is_public_http_url(url):
             raise ScrapeError("blocked non-public or invalid URL")
         guarded = public_fetch_guard_enabled()
+        navigation_timeout = min(self._timeout(), 20) if guarded else self._timeout()
+        navigation_timeout_ms = max(1_000, navigation_timeout * 1000)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as e:  # pragma: no cover
@@ -74,11 +77,11 @@ class PlaywrightScraper(BaseScraper):
                     # mode, avoiding an X server while retaining the real
                     # browser implementation for public scraping.
                     launch_options["channel"] = "chromium"
-                    launch_options["timeout"] = min(
-                        30_000,
-                        max(1_000, self._timeout() * 1000),
-                    )
-                browser = p.chromium.launch(**launch_options)
+                    launch_options["timeout"] = navigation_timeout_ms
+                try:
+                    browser = p.chromium.launch(**launch_options)
+                except Exception as exc:
+                    raise ScrapeError("Playwright browser launch failed") from exc
 
                 try:
                     page = browser.new_page()
@@ -91,7 +94,7 @@ class PlaywrightScraper(BaseScraper):
 
                     page.goto(
                         url,
-                        timeout=self._timeout() * 1000,
+                        timeout=navigation_timeout_ms,
                         wait_until="domcontentloaded",
                     )
 
@@ -114,9 +117,16 @@ class PlaywrightScraper(BaseScraper):
                         proxy_used=proxy if not guarded else None,
                         region=region,
                     )
+                except ScrapeError:
+                    raise
+                except Exception as exc:
+                    raise ScrapeError("Playwright page fetch failed") from exc
 
                 finally:
-                    browser.close()
+                    try:
+                        browser.close()
+                    except Exception:
+                        logger.debug("could not close Playwright after scrape", exc_info=True)
 
     def _timeout(self) -> int:
         from app.config import settings
