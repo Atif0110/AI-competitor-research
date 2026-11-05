@@ -90,7 +90,8 @@ class PlaywrightScraper(BaseScraper):
                         request = route.request
                         if (
                             not is_public_http_url(request.url)
-                            or request.resource_type in {"image", "media", "font"}
+                            or getattr(request, "resource_type", "other")
+                            in {"image", "media", "font"}
                         ):
                             route.abort()
                         else:
