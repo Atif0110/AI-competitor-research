@@ -1,4 +1,5 @@
 FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
+# Keep the Python package version in requirements.txt aligned with this image.
 
 WORKDIR /app
 

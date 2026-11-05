@@ -287,6 +287,7 @@ def test_public_workspace_keeps_browser_scraper_behind_pinned_proxy(monkeypatch)
     }
     assert launch_options["headless"] is True
     assert launch_options["channel"] == "chromium"
+    assert 1_000 <= launch_options["timeout"] <= 30_000
     assert "--disable-quic" in launch_options["args"]
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launch_options["args"]
 

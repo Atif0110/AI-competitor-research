@@ -67,6 +67,10 @@ class PlaywrightScraper(BaseScraper):
                     # mode, avoiding an X server while retaining the real
                     # browser implementation for public scraping.
                     launch_options["channel"] = "chromium"
+                    launch_options["timeout"] = min(
+                        30_000,
+                        max(1_000, self._timeout() * 1000),
+                    )
                 browser = p.chromium.launch(**launch_options)
 
                 try:
