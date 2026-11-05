@@ -194,6 +194,10 @@ class ResearchCoverage(BaseModel):
     duration_s: float = 0.0
     llm_calls: int = 0
     estimated_tokens: int = 0
+    provider_attempts: int = 0
+    providers_attempted: List[str] = Field(default_factory=list)
+    providers_used: List[str] = Field(default_factory=list)
+    provider_fallbacks: List[str] = Field(default_factory=list)
 
 
 class DeepResearchResult(BaseModel):

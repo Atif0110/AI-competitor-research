@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 from .base import BaseScraper, ScrapeError, ScrapedPage, parse_proxy_url
-from app.url_safety import is_public_http_url
+from app.url_safety import is_public_http_url, public_fetch_guard_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,12 @@ class PlaywrightScraper(BaseScraper):
         proxy: Optional[str],
         region: Optional[str] = None,
     ) -> ScrapedPage:
+        from app.config import settings
+
+        if public_fetch_guard_enabled():
+            raise ScrapeError(
+                "Playwright is disabled for anonymous URL research because browser requests cannot use the DNS-pinned HTTP transport"
+            )
         if not is_public_http_url(url):
             raise ScrapeError("blocked non-public or invalid URL")
         try:

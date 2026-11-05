@@ -663,6 +663,15 @@ class Settings:
         return self.demo_mode_enabled
 
     @property
+    def anonymous_access_enabled(self) -> bool:
+        """Whether research endpoints can be used without a configured API key."""
+        return bool(
+            self.public_workspace_mode
+            or not self.api_key_required
+            or (self.demo_mode and not self.api_key)
+        )
+
+    @property
     def has_llm_credentials(self) -> bool:
         """Return whether at least one supported LLM credential is configured."""
 

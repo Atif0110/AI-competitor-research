@@ -432,11 +432,15 @@ def test_research_chat_endpoints(site, env, monkeypatch):
 
     from app.api import app
 
-    monkeypatch.setattr(settings, "api_key_required", False)
+    # Keep this local loopback fixture in authenticated mode so the public
+    # URL guard cannot be mistaken for a private-network target.
+    monkeypatch.setattr(settings, "public_workspace_mode", False)
+    monkeypatch.setattr(settings, "api_key_required", True)
+    monkeypatch.setattr(settings, "api_key", "test-api-key")
 
     pipeline = DeepResearchPipeline()
     run = _run_fixture(pipeline, site)
-    client = TestClient(app)
+    client = TestClient(app, headers={"X-API-Key": "test-api-key"})
 
     asked = client.post(
         "/research/chat",

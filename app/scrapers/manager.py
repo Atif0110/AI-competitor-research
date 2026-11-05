@@ -1,12 +1,11 @@
-"""Scraper manager — builds the ScraperOrchestrator chain from what is
-configured/installed: Firecrawl -> Playwright -> Basic HTTP (always present
-as the final fallback)."""
+"""Build the scraping chain, keeping unpinned fetchers out of public mode."""
 from __future__ import annotations
 
 import importlib.util
 import logging
 
 from app.config import settings
+from app.url_safety import public_fetch_guard_enabled
 
 from .base import BaseScraper, ScrapeError  # noqa: F401  (re-export)
 from .orchestrator import ScraperOrchestrator
@@ -17,15 +16,21 @@ logger = logging.getLogger(__name__)
 def build_scraper() -> ScraperOrchestrator:
     chain: list[BaseScraper] = []
 
-    if settings.firecrawl_api_key:
+    guarded = public_fetch_guard_enabled()
+    if settings.firecrawl_api_key and not guarded:
         from .firecrawl import FirecrawlScraper
         chain.append(FirecrawlScraper())
         logger.info("scraper chain: firecrawl configured")
+    elif settings.firecrawl_api_key:
+        logger.warning("firecrawl disabled for anonymous URL research; URL resolution is performed outside this network boundary")
 
     if importlib.util.find_spec("playwright"):
-        from .playwright_scraper import PlaywrightScraper
-        chain.append(PlaywrightScraper())
-        logger.info("scraper chain: playwright available")
+        if guarded:
+            logger.warning("playwright disabled for anonymous URL research; browser networking is not DNS-pinned")
+        else:
+            from .playwright_scraper import PlaywrightScraper
+            chain.append(PlaywrightScraper())
+            logger.info("scraper chain: playwright available")
 
     from .basic import BasicScraper
     chain.append(BasicScraper())  # always available as last resort

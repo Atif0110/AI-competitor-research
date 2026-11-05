@@ -22,7 +22,13 @@ class FirecrawlScraper(BaseScraper):
     def _fetch_once(self, url: str, proxy: Optional[str],
                     region: Optional[str] = None) -> ScrapedPage:
         import requests
+        from app.config import settings
+        from app.url_safety import public_fetch_guard_enabled
 
+        if public_fetch_guard_enabled():
+            raise ScrapeError(
+                "Firecrawl is disabled for anonymous URL research because URL fetching occurs outside this network boundary"
+            )
         if not self.api_key:
             raise ScrapeError("FIRECRAWL_API_KEY not set")
         payload = {"url": url, "formats": ["markdown"]}

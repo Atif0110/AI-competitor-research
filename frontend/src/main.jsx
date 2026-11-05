@@ -198,6 +198,15 @@ function Empty({ title, text, action, onAction }) {
   );
 }
 
+function LoadError({ title, message, onRetry }) {
+  return (
+    <div className="load-error" role="alert">
+      <div><strong>{title}</strong><p>{message}</p></div>
+      {onRetry && <button className="btn-ghost" onClick={onRetry}>Retry</button>}
+    </div>
+  );
+}
+
 function Badge({ children, tone = 'neutral' }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
@@ -298,6 +307,8 @@ function App() {
   };
 
   const online = health?.status === 'ok';
+  const configuredModels = Object.entries(health?.llm_models || {}).filter(([, model]) => model);
+  const providerMissing = online && health?.mode === 'live' && !configuredModels.length;
   const navGroups = [
     { label: 'Workspace', items: [['dashboard', 'Overview', 'grid'], ['history', 'Research history', 'layers']] },
     { label: 'Build the research', items: [['deep', 'Web research', 'compass'], ['run', 'Compare companies', 'target']] },
@@ -346,7 +357,7 @@ function App() {
           <div className={`workspace-service${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite">
             <span className="connection-dot" /><span><strong>{online ? 'Service ready' : health?.status === 'error' ? 'Service offline' : 'Connecting'}</strong><small>Research API</small></span>
           </div>
-          <span className="workspace-local-note">Evidence saved to your workspace</span>
+          <span className="workspace-local-note">{health?.public_workspace ? 'Shared workspace' : 'Evidence saved to your workspace'}</span>
         </div>
       </aside>
       {navOpen && <button className="workspace-nav-scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />}
@@ -356,7 +367,7 @@ function App() {
           <button className="workspace-mobile-toggle" onClick={() => setNavOpen((open) => !open)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen}><Icon name="menu" /></button>
           <div className="workspace-crumb"><span>Scope</span><span aria-hidden="true">/</span><strong>{pageTitle}</strong></div>
           <div className="workspace-topbar-actions">
-            <div className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite" title={health?.llm_provider_chain?.length ? `Route: ${health.llm_provider_chain.join(' / ')}` : undefined}><span className="connection-dot" /><span>{online ? 'Connected' : health?.status === 'error' ? 'Offline' : 'Connecting'}</span></div>
+            <div className={`connection-pill${online ? ' is-online' : health?.status === 'error' ? ' is-offline' : ''}`} aria-live="polite" title={health?.llm_provider_chain?.length ? `AI route: ${health.active_llm_provider || 'not selected'} · ${health.active_llm_model || 'model unavailable'} · configured: ${configuredModels.map(([provider]) => provider).join(', ') || 'none'}` : undefined}><span className="connection-dot" /><span>{online ? 'Connected' : health?.status === 'error' ? 'Offline' : 'Connecting'}</span></div>
             <button className="btn-primary site-new" onClick={() => navigate('deep')} aria-label="New research"><Icon name="plus" size={15} /><span>New research</span></button>
           </div>
         </header>
@@ -371,6 +382,20 @@ function App() {
               <button className="btn-ghost" onClick={loadHealth}>
                 Retry
               </button>
+            </div>
+          )}
+
+          {online && health?.public_workspace && (
+            <div className="workspace-notice" role="note">
+              <Icon name="alert" size={16} />
+              <div><strong>Shared public workspace</strong><p>Runs, reports, evidence and chat history can be seen by anyone using this app. Don’t enter confidential information.</p></div>
+            </div>
+          )}
+
+          {providerMissing && (
+            <div className="workspace-notice" role="status">
+              <Icon name="key" size={16} />
+              <div><strong>No AI provider key is configured</strong><p>The API is online, but research will use its deterministic fallback. Add a provider key in the backend host’s environment settings, then restart the service.</p></div>
             </div>
           )}
 
@@ -1155,7 +1180,7 @@ function DeepResearch({ result, onResult, onChat, notify, health, onNeedKey }) {
             <Stat label="Status" value={pretty(result.status)} note={`${result.duration_s}s elapsed`} />
             <Stat label="Source quality" value={`${num(coverage?.pages_fetched)} fetched`} note={`${num(coverage?.pages_failed)} failed · ${num(coverage?.pages_skipped)} skipped`} />
             <Stat label="Sections" value={num(coverage?.sections)} note={`${num(coverage?.facts)} facts extracted`} />
-            <Stat label="Run usage" value={`${num(coverage?.llm_calls)} calls`} note={`${coverage?.estimated_tokens ? `~${num(coverage.estimated_tokens)} estimated tokens` : coverage?.llm_calls ? 'token estimate unavailable' : '0 estimated tokens'} · ${num(coverage?.characters)} evidence chars`} />
+            <Stat label="Run usage" value={`${num(coverage?.llm_calls)} AI calls`} note={`${coverage?.providers_attempted?.length ? `Providers tried: ${coverage.providers_attempted.join(' → ')} · ` : ''}${coverage?.estimated_tokens ? `~${num(coverage.estimated_tokens)} estimated tokens` : coverage?.llm_calls ? 'token estimate unavailable' : '0 estimated tokens'} · ${num(coverage?.characters)} evidence chars`} />
           </section>
 
           <section className="panel">
@@ -1424,18 +1449,45 @@ function Evidence({ runId, notify }) {
 /* ------------------------------------------------------------------ */
 function Signals({ runId }) {
   const [data, setData] = useState({ undercut: [], moves: [], regional: [], events: [] });
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
+    let current = true;
     const suffix = runId ? `?run_id=${runId}` : '';
-    Promise.all([
-      api(`/insights/undercut${suffix}`).catch(() => []),
-      api(`/insights/price-moves?days_back=30${runId ? `&run_id=${runId}` : ''}`).catch(() => []),
-      api(`/insights/regional${suffix}`).catch(() => []),
-      api(`/insights/events${suffix}`).catch(() => []),
-    ]).then(([undercut, moves, regional, events]) =>
-      setData({ undercut, moves, regional, events }),
-    );
-  }, [runId]);
+    const endpoints = {
+      undercut: `/insights/undercut${suffix}`,
+      moves: `/insights/price-moves?days_back=30${runId ? `&run_id=${runId}` : ''}`,
+      regional: `/insights/regional${suffix}`,
+      events: `/insights/events${suffix}`,
+    };
+    setLoading(true);
+    setErrors({});
+    Promise.allSettled(Object.entries(endpoints).map(([, path]) => api(path)))
+      .then((results) => {
+        if (!current) return;
+        const nextData = {};
+        const nextErrors = {};
+        Object.keys(endpoints).forEach((key, index) => {
+          const result = results[index];
+          if (result.status === 'rejected') nextErrors[key] = result.reason?.message || 'Could not load this section.';
+          else if (!Array.isArray(result.value)) nextErrors[key] = 'The API returned an unexpected response.';
+          else nextData[key] = result.value;
+        });
+        setData((previous) => ({ ...previous, ...nextData }));
+        setErrors(nextErrors);
+      })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [runId, retry]);
+
+  const sections = [
+    ['undercut', 'Undercutting', 'No undercut signals', 'No competitor is currently priced below the target in the same region.'],
+    ['moves', 'Price movement', 'No price movement', 'No comparable re-capture has shown a real change yet.'],
+    ['regional', 'Regional comparison', 'No regional data', 'Regional comparisons appear when comparable offers exist across regions.'],
+    ['events', 'Market events', 'No recent events', 'Events appear when new evidence supports a notable market change.'],
+  ];
 
   return (
     <>
@@ -1445,30 +1497,15 @@ function Signals({ runId }) {
         lede="Comparisons are only produced when two comparable observations exist, so an alert always has evidence behind it."
       />
       <div className="split">
-        <section className="panel">
-          <div className="panel-head"><h2>Undercutting</h2></div>
-          {data.undercut.length ? (
-            <ul className="bullets">
-              {data.undercut.slice(0, 10).map((item, index) => (
-                <li key={index}><Inline text={JSON.stringify(item)} /></li>
-              ))}
-            </ul>
-          ) : (
-            <Empty title="No undercut signals" text="No competitor is currently priced below the target in the same region." />
-          )}
-        </section>
-        <section className="panel">
-          <div className="panel-head"><h2>Price movement</h2></div>
-          {data.moves.length ? (
-            <ul className="bullets">
-              {data.moves.slice(0, 10).map((item, index) => (
-                <li key={index}><Inline text={JSON.stringify(item)} /></li>
-              ))}
-            </ul>
-          ) : (
-            <Empty title="No price movement" text="No comparable re-capture has shown a real change yet." />
-          )}
-        </section>
+        {sections.map(([key, title, emptyTitle, emptyText]) => (
+          <section className="panel" key={key}>
+            <div className="panel-head"><h2>{title}</h2></div>
+            {errors[key] ? <LoadError title={`${title} could not be loaded`} message={errors[key]} onRetry={() => setRetry((value) => value + 1)} />
+              : loading ? <p className="muted" role="status">Loading {title.toLowerCase()}…</p>
+                : data[key].length ? <ul className="bullets">{data[key].slice(0, 10).map((item, index) => <li key={index}><Inline text={JSON.stringify(item)} /></li>)}</ul>
+                  : <Empty title={emptyTitle} text={emptyText} />}
+          </section>
+        ))}
       </div>
     </>
   );
@@ -1490,6 +1527,9 @@ function ResearchChat({ runId, sessionId: savedSessionId, notify }) {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionLoadError, setSessionLoadError] = useState('');
+  const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0);
   const sessionId = activeSessionId;
 
   useEffect(() => {
@@ -1521,20 +1561,28 @@ function ResearchChat({ runId, sessionId: savedSessionId, notify }) {
   useEffect(() => {
     if (!sessionId) {
       setMessages([]);
+      setSessionLoading(false);
+      setSessionLoadError('');
       return;
     }
+    let current = true;
+    setMessages([]);
+    setSessionLoading(true);
+    setSessionLoadError('');
     api(`/research/chat/${sessionId}`)
-      .then((data) =>
-        setMessages(
-          (data.messages || []).map((m) => ({
+      .then((data) => {
+        if (!current) return;
+        if (!Array.isArray(data?.messages)) throw new Error('The API returned an unexpected chat response.');
+        setMessages((data.messages || []).map((m) => ({
             role: m.role,
             content: m.content,
             citations: safeJson(m.citations),
-          })),
-        ),
-      )
-      .catch(() => setMessages([]));
-  }, [sessionId, activeRun]);
+        })));
+      })
+      .catch((error) => { if (current) setSessionLoadError(error.message || 'Could not load this saved chat.'); })
+      .finally(() => { if (current) setSessionLoading(false); });
+    return () => { current = false; };
+  }, [sessionId, activeRun, sessionLoadAttempt]);
 
   const send = async (event) => {
     event.preventDefault();
@@ -1619,7 +1667,9 @@ function ResearchChat({ runId, sessionId: savedSessionId, notify }) {
 
         <section className="chat-body">
           <div className="chat-log">
-            {!messages.length && (
+            {sessionLoading && <p className="muted" role="status">Loading saved chat…</p>}
+            {sessionLoadError && <LoadError title="Saved chat could not be loaded" message={sessionLoadError} onRetry={() => setSessionLoadAttempt((value) => value + 1)} />}
+            {!messages.length && !sessionLoading && !sessionLoadError && (
               <div className="chat-intro">
                 <h2>Ask about the captured evidence</h2>
                 <p>Questions the evidence cannot answer come back as gaps, not guesses.</p>
@@ -1664,10 +1714,10 @@ function ResearchChat({ runId, sessionId: savedSessionId, notify }) {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder={activeRun ? 'Ask a question about this run…' : 'Select a saved research run first…'}
-              disabled={busy || !activeRun}
+              disabled={busy || sessionLoading || !!sessionLoadError || !activeRun}
               aria-label="Your question"
             />
-            <button className="btn-primary" type="submit" disabled={busy || !draft.trim() || !activeRun} aria-label="Send question">
+            <button className="btn-primary" type="submit" disabled={busy || sessionLoading || !!sessionLoadError || !draft.trim() || !activeRun} aria-label="Send question">
               <Icon name="arrow" size={16} />
             </button>
           </form>
@@ -1682,12 +1732,24 @@ function ResearchChat({ runId, sessionId: savedSessionId, notify }) {
 /* ------------------------------------------------------------------ */
 function Reports() {
   const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
+    let current = true;
+    setLoading(true);
+    setError('');
     api('/reports')
-      .then(setReports)
-      .catch(() => {});
-  }, []);
+      .then((items) => {
+        if (!current) return;
+        if (!Array.isArray(items)) throw new Error('The API returned an unexpected response.');
+        setReports(items);
+      })
+      .catch((loadError) => { if (current) setError(loadError.message || 'Could not load reports.'); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [retry]);
 
   return (
     <>
@@ -1697,7 +1759,9 @@ function Reports() {
         lede="Generated reports stay linked to their research run so the underlying evidence remains auditable."
       />
       <section className="panel">
-        {reports.length ? (
+        {error ? <LoadError title="Reports could not be loaded" message={error} onRetry={() => setRetry((value) => value + 1)} />
+          : loading ? <p className="muted" role="status">Loading reports…</p>
+          : reports.length ? (
           <ul className="sources">
             {reports.map((report) => {
               const id = report.replace(/^report_|\.pdf$/g, '');

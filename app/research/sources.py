@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 from app.config import settings
 from app.research.fetching import _USER_AGENT, normalize_link
 from app.research.models import SearchHit
+from app.url_safety import is_public_http_url, public_fetch_guard_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,10 @@ class ApiNexSearch(SearchBackend):
         return _hits_from_payload(data, limit, origin="apinex-search")
 
     def contents(self, url: str) -> Optional[str]:
+        # This endpoint fetches the supplied URL on APINEX's infrastructure,
+        # outside our DNS-pinned transport. Keep it disabled for public input.
+        if public_fetch_guard_enabled() or not is_public_http_url(url):
+            return None
         if not (self.api_key and self.enabled):
             return None
         data = self._post("/tools/web/contents", {"urls": [url], "format": "markdown"})

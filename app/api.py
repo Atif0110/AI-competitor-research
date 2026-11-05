@@ -27,7 +27,7 @@ from app.schemas import Competitor, CompetitorTarget, PipelineResult, Region
 from app.storage.db import OfferStore
 from app.storage.vector import ReviewStore
 from app.util import is_safe_run_id, parse_region
-from app.url_safety import is_public_http_url
+from app.url_safety import is_public_http_url, public_fetch_guard_enabled
 
 logger = logging.getLogger(__name__)
 _store = OfferStore()
@@ -123,13 +123,13 @@ def _require_public_research_or_api_key(
     request: Request,
     x_api_key: Optional[str] = Header(default=None),
 ) -> None:
-    """Allow only the visitor-facing research API through in public mode."""
+    """Allow only visitor research endpoints through when access is anonymous."""
     path = request.url.path
     public_write = request.method == "POST" and path in {
         "/research", "/research/jobs", "/research/deep", "/research/chat",
     }
     public_job_read = request.method == "GET" and path.startswith("/research/jobs/")
-    if settings.public_workspace_mode and (public_write or public_job_read):
+    if public_fetch_guard_enabled() and (public_write or public_job_read):
         return
     _require_api_key(x_api_key)
 
@@ -147,7 +147,7 @@ def _research_rate_limit(request: Request) -> None:
     ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
     path = request.url.path
-    if settings.public_workspace_mode:
+    if public_fetch_guard_enabled():
         # Bound anonymous hosted usage even when the shared deployment key is
         # disabled. New crawls are costly; chat requests receive a separate cap.
         group = "chat" if path == "/research/chat" else "research"
@@ -175,7 +175,7 @@ def _research_rate_limit(request: Request) -> None:
 
 
 def _validate_public_target(target: CompetitorTarget) -> None:
-    if settings.public_workspace_mode and (len(target.competitors) > 4 or len(target.regions) > 3):
+    if public_fetch_guard_enabled() and (len(target.competitors) > 4 or len(target.regions) > 3):
         raise HTTPException(status_code=422, detail="public research is limited to four competitors and three regions per run")
 
 def _set_job(job_id: str, **updates) -> None:
@@ -418,8 +418,8 @@ def create_app():
             "storage_backend": "postgresql" if _store._postgres else "sqlite",
             "offers": _store.count(), "review_backend": _reviews.backend,
             "scheduler": settings.scheduler_autostart,
-            "auth_required": bool(settings.api_key_required and not settings.public_workspace_mode),
-            "public_workspace": bool(settings.public_workspace_mode),
+            "auth_required": bool(settings.api_key_required and not settings.anonymous_access_enabled),
+            "public_workspace": bool(settings.anonymous_access_enabled),
             "active_llm_provider": client.provider_name,
             "active_llm_model": client.active_model,
             "llm_provider_chain": client.chain,
@@ -460,7 +460,7 @@ def create_app():
         _validate_public_target(target)
         job_id = uuid.uuid4().hex[:12]
         target_data = target.model_dump(mode="json")
-        if settings.public_workspace_mode:
+        if public_fetch_guard_enabled():
             with _jobs_lock:
                 active = sum(job.get("status") in {"queued", "running"} for job in _jobs.values())
                 if active >= 2:
@@ -499,7 +499,7 @@ def create_app():
     def deep_research(payload: DeepResearchRequest):
         from app.research.models import ResearchMode, ResearchRequest
 
-        if settings.public_workspace_mode:
+        if public_fetch_guard_enabled():
             if len(payload.competitors) > 4:
                 raise HTTPException(status_code=422, detail="public deep research is limited to four competitors per run")
             if payload.max_pages > settings.deep_max_pages or payload.max_depth > settings.deep_max_depth:

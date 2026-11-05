@@ -28,7 +28,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
 from app.focus import category_aliases
-from app.url_safety import is_public_http_url, safe_http_get
+from app.url_safety import is_public_http_url, public_fetch_guard_enabled, safe_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -563,6 +563,10 @@ def discover_firecrawl(
     """Discover candidate intelligence URLs through Firecrawl /map."""
     import requests
 
+    if public_fetch_guard_enabled():
+        raise RuntimeError(
+            "Firecrawl discovery is disabled for anonymous URL research because URL resolution occurs outside this network boundary"
+        )
     if not settings.firecrawl_api_key:
         raise RuntimeError(
             "FIRECRAWL_API_KEY not set"
@@ -938,7 +942,7 @@ def discover_urls_for_entity(
     # Firecrawl supplements search rather than short-circuiting sitemaps.
     # --------------------------------------------------------------
 
-    if settings.firecrawl_api_key and len(found) < 3:
+    if settings.firecrawl_api_key and not public_fetch_guard_enabled() and len(found) < 3:
         try:
             firecrawl_found = discover_firecrawl(
                 website,

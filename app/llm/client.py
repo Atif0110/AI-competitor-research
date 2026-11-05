@@ -744,6 +744,8 @@ class LLMClient:
             self.provider_attempts += 1
             if usage is not None:
                 usage["provider_attempts"] += 1
+                if name not in usage["providers_attempted"]:
+                    usage["providers_attempted"].append(name)
 
             try:
                 output = client.complete(
@@ -773,6 +775,9 @@ class LLMClient:
                     )
                     if usage is not None:
                         usage["fallbacks_count"] += 1
+                        usage["provider_fallbacks"].append(
+                            f"{previous_provider}->{name}"
+                        )
 
                     self._fallback_since = (
                         time.monotonic()
@@ -783,6 +788,8 @@ class LLMClient:
 
                 self._current = index
                 self.last_error = None
+                if usage is not None and name not in usage["providers_used"]:
+                    usage["providers_used"].append(name)
                 # Provider usage is not consistently included in responses.
                 # Keep a transparent character-based estimate instead of
                 # presenting it as billed/tokenizer-exact usage.
@@ -842,7 +849,7 @@ class LLMClient:
         usage = _ACTIVE_USAGE.get()
         return {
             "provider": self.provider_name,
-            "fallback_used": bool(self.fallbacks),
+            "fallback_used": bool(usage["provider_fallbacks"] if usage is not None else self.fallbacks),
             "fallback_from": (
                 self.fallbacks[0][0]
                 if self.fallbacks
@@ -853,7 +860,9 @@ class LLMClient:
                 if self.fallbacks
                 else None
             ),
-            "fallbacks": list(self.fallbacks),
+            "fallbacks": list(usage["provider_fallbacks"]) if usage is not None else list(self.fallbacks),
+            "providers_attempted": list(usage["providers_attempted"]) if usage is not None else [],
+            "providers_used": list(usage["providers_used"]) if usage is not None else [],
             "calls": usage["calls"] if usage is not None else self.calls,
             "estimated_tokens": usage["estimated_tokens"] if usage is not None else getattr(self, "estimated_tokens", 0),
             "provider_attempts": usage["provider_attempts"] if usage is not None else self.provider_attempts,
@@ -872,7 +881,15 @@ class LLMClient:
     @contextmanager
     def usage_scope(self):
         """Track usage in this execution context so concurrent runs stay separate."""
-        usage = {"calls": 0, "estimated_tokens": 0, "provider_attempts": 0, "fallbacks_count": 0}
+        usage = {
+            "calls": 0,
+            "estimated_tokens": 0,
+            "provider_attempts": 0,
+            "fallbacks_count": 0,
+            "providers_attempted": [],
+            "providers_used": [],
+            "provider_fallbacks": [],
+        }
         marker = _ACTIVE_USAGE.set(usage)
         try:
             yield usage

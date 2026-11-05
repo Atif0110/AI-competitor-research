@@ -27,7 +27,12 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 from app.config import settings
 from app.scrapers.base import ProxyPool
-from app.url_safety import is_public_http_url
+from app.url_safety import (
+    create_public_session,
+    is_public_http_url,
+    public_fetch_guard_enabled,
+    safe_http_get,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -440,16 +445,13 @@ class RobotsGate:
             return True
 
     def _load(self, origin: str, session) -> Optional[urllib.robotparser.RobotFileParser]:
-        import requests
-
         try:
             if not is_public_http_url(f"{origin}/robots.txt"):
                 return None
-            response = requests.get(
+            response = safe_http_get(
                 f"{origin}/robots.txt",
                 headers={"User-Agent": self.user_agent},
                 timeout=10,
-                allow_redirects=False,
             )
         except Exception:
             logger.debug("robots.txt unreachable for %s", origin, exc_info=True)
@@ -490,7 +492,11 @@ class Fetcher:
         self.robots = RobotsGate(
             settings.deep_respect_robots if respect_robots is None else respect_robots
         )
-        self._session = requests.Session()
+        self._session = (
+            create_public_session()
+            if public_fetch_guard_enabled()
+            else requests.Session()
+        )
         self._session.headers.update(
             {
                 "User-Agent": _USER_AGENT,
@@ -512,13 +518,17 @@ class Fetcher:
             self._last_hit[host] = time.monotonic()
 
     def fetch(self, url: str, region: Optional[str] = None) -> FetchResult:
-        if settings.public_workspace_mode and not is_public_http_url(url):
+        if public_fetch_guard_enabled() and not is_public_http_url(url):
             return FetchResult(url=url, ok=False, status=None, error="blocked non-public or invalid URL")
         host = urlparse(url).netloc
         if not self.robots.allowed(url, self._session):
             return FetchResult(url=url, ok=False, status=None, error="blocked by robots.txt")
 
-        proxy = self.proxy_pool.next(region) if self.proxy_pool.enabled else None
+        proxy = (
+            self.proxy_pool.next(region)
+            if self.proxy_pool.enabled and not public_fetch_guard_enabled()
+            else None
+        )
         proxies = {"http": proxy, "https": proxy} if proxy else None
         last_error: Optional[str] = None
         started = time.monotonic()
@@ -544,7 +554,7 @@ class Fetcher:
             if response.is_redirect or response.is_permanent_redirect:
                 location = response.headers.get("Location", "")
                 redirect_url = urljoin(url, location)
-                if settings.public_workspace_mode and not is_public_http_url(redirect_url):
+                if public_fetch_guard_enabled() and not is_public_http_url(redirect_url):
                     last_error = "blocked redirect to non-public or invalid URL"
                     break
                 if attempt < max(1, self.max_retries):

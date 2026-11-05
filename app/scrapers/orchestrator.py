@@ -17,6 +17,7 @@ from typing import List, Optional, Sequence
 from urllib.parse import urlparse
 
 from app.config import settings
+from app.url_safety import public_fetch_guard_enabled
 
 from .base import BaseScraper, ProxyPool, RetryPolicy, ScrapeError, ScrapeLog, ScrapedPage
 
@@ -73,6 +74,10 @@ class ScraperOrchestrator:
         """Strict geo policy: with PROXY_VERIFY=true a region that has a pool
         MUST resolve to a verified proxy for that region, else the scrape is
         refused (never silently use a different geography)."""
+        if public_fetch_guard_enabled():
+            # A remote proxy resolves the destination outside our pinned
+            # socket guard. Public mode deliberately fetches from this host.
+            return None
         if settings.proxy_verify and region:
             proxy = self.proxy_pool.next_verified(region)
             if proxy is None:

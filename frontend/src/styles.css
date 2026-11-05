@@ -1960,6 +1960,28 @@ select {
   border-radius: var(--radius);
 }
 
+.workspace-notice,
+.load-error {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 13px 15px;
+  border: 1px solid rgba(241, 189, 104, .28);
+  border-radius: var(--radius);
+  background: rgba(241, 189, 104, .07);
+  color: #d7b77f;
+}
+
+.workspace-notice svg { margin-top: 1px; color: #d7b77f; }
+.load-error { grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-notice strong,
+.load-error strong { display: block; color: var(--text); font-size: 13px; }
+.workspace-notice p,
+.load-error p { margin: 4px 0 0; color: var(--text-3); font-size: 12px; line-height: 1.55; }
+.load-error { border-color: var(--bad); background: var(--bad-wash); color: var(--bad); }
+.load-error .btn-ghost { align-self: center; }
+
 .banner svg {
   color: var(--bad);
   margin-top: 2px;
