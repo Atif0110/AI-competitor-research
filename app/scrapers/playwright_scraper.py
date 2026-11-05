@@ -64,6 +64,7 @@ class PlaywrightScraper(BaseScraper):
                     }
                     kwargs["args"] = [
                         "--disable-quic",
+                        "--disable-dev-shm-usage",
                         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                     ]
                 elif proxy:

@@ -487,6 +487,7 @@ class Pipeline:
                             "scrape_fetch_completed", run_id=run_id, url=page_url,
                             region=page_region, index=page_index, total=len(items),
                             scraper=scrape_log.final_scraper,
+                            scrapers_tried=scrape_log.scrapers_tried,
                         )
 
                 future.add_done_callback(report_fetch)

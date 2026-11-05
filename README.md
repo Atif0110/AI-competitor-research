@@ -360,7 +360,7 @@ DNS-pinned HTTP
 Playwright through the DNS-pinning proxy
 ```
 
-If browser rendering fails, the public pipeline retains the HTTP response for extraction. Public HTTP uses one attempt capped at 15 seconds before moving on, avoiding repeated waits on a blocked host. An empty bare homepage is marked unavailable without launching Chromium; browser escalation remains enabled for product, category, and search pages. This keeps browser rendering available for dynamic sites while limiting its use to pages where it can improve the evidence.
+If browser rendering fails, the public pipeline retains the HTTP response for extraction. Public HTTP uses one 15-second attempt and follows at most two redirects before moving on, avoiding repeated waits on a blocked host; Chromium can still follow validated redirects through the DNS-pinning proxy. An empty bare homepage is marked unavailable without launching Chromium; browser escalation remains enabled for product, category, and search pages. This keeps browser rendering available for dynamic sites while limiting its use to pages where it can improve the evidence.
 
 **Important real-world limitation**
 

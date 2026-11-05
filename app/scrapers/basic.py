@@ -27,7 +27,13 @@ class BasicScraper(BaseScraper):
 
         proxies = {"http": proxy, "https": proxy} if proxy else None
         try:
-            resp = safe_http_get(url, headers=_HEADERS, timeout=self._timeout(), proxies=proxies)
+            resp = safe_http_get(
+                url,
+                headers=_HEADERS,
+                timeout=self._timeout(),
+                max_redirects=2 if public_fetch_guard_enabled() else 5,
+                proxies=proxies,
+            )
         except (requests.RequestException, ValueError) as e:
             raise ScrapeError(f"request failed: {e}") from e
         if resp.status_code >= 400:
