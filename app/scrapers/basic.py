@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 from .base import BaseScraper, ScrapeError, ScrapedPage
-from app.url_safety import safe_http_get
+from app.url_safety import public_fetch_guard_enabled, safe_http_get
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ _HEADERS = {
 
 class BasicScraper(BaseScraper):
     name = "basic"
+    public_max_attempts = 1
 
     def _fetch_once(self, url: str, proxy: Optional[str],
                     region: Optional[str] = None) -> ScrapedPage:
@@ -39,7 +40,8 @@ class BasicScraper(BaseScraper):
     def _timeout(self) -> int:
         from app.config import settings
 
-        return settings.request_timeout_seconds
+        timeout = settings.request_timeout_seconds
+        return min(timeout, 15) if public_fetch_guard_enabled() else timeout
 
 
 def _html_to_text(html: str) -> str:
