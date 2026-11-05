@@ -317,7 +317,7 @@ def test_public_workspace_keeps_browser_scraper_behind_pinned_proxy(monkeypatch)
         firecrawl._fetch_once("https://example.com", None)
 
 
-def test_public_scraper_chain_includes_pinned_playwright(monkeypatch):
+def test_public_scraper_chain_tries_basic_before_pinned_playwright(monkeypatch):
     from app.config import settings
     from app.scrapers import manager
 
@@ -325,7 +325,7 @@ def test_public_scraper_chain_includes_pinned_playwright(monkeypatch):
     monkeypatch.setattr(settings, "firecrawl_api_key", "")
     monkeypatch.setattr(manager.importlib.util, "find_spec", lambda name: object() if name == "playwright" else None)
 
-    assert manager.build_scraper().names == ["playwright", "basic"]
+    assert manager.build_scraper().names == ["basic", "playwright"]
 
 
 def test_public_browser_sessions_are_serialized():
