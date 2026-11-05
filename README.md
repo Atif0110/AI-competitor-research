@@ -344,19 +344,23 @@ When embeddings are unavailable, the application has deterministic fallback beha
 
 ### Scraping Architecture
 
-The application supports multiple scraping mechanisms:
+The application supports multiple scraping mechanisms. Private runs use the provider-first chain; anonymous public runs use the DNS-pinned HTTP fetcher first and escalate when its response looks like a JavaScript shell, access challenge, or unusually thin page.
 
 ```text
+Private:
 Firecrawl
     ↓
 Playwright
     ↓
 HTTP
-    ↓
-Demo / deterministic path
+
+Anonymous public:
+DNS-pinned HTTP
+    ↓ (only for thin, JavaScript, or challenge responses)
+Playwright through the DNS-pinning proxy
 ```
 
-This provides multiple ways to obtain page content depending on the target website and execution environment.
+If browser rendering fails, the public pipeline retains the HTTP response for extraction. This keeps browser rendering available for dynamic sites while limiting its use to pages where it can improve the evidence.
 
 **Important real-world limitation**
 

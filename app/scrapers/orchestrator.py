@@ -1,8 +1,9 @@
 """ScraperOrchestrator — a real strategy chain (Priority 2).
 
-    Firecrawl -> 403
-              -> Playwright -> JS challenge
-                            -> Basic HTTP -> success   (telemetry recorded)
+Private runs use Firecrawl -> Playwright -> Basic HTTP. Anonymous runs try
+DNS-pinned Basic HTTP first and render with Playwright when the response is a
+challenge, JavaScript shell, or too thin to be useful; the HTTP response stays
+available if browser rendering fails.
 
 Each scraper gets up to `max_retries` attempts (backoff + rate limit +
 geo proxy rotation); on persistent failure the next scraper in the chain is
@@ -38,8 +39,10 @@ class ScraperOrchestrator:
         host = urlparse(url).netloc
         log = ScrapeLog(url=url, region=region)
         last_error: Optional[Exception] = None
+        basic_fallback: Optional[ScrapedPage] = None
+        basic_fallback_log: Optional[ScrapeLog] = None
 
-        for scraper in self.scrapers:
+        for scraper_index, scraper in enumerate(self.scrapers):
             max_attempts = self.retry_policy.max_retries
             public_max_attempts = getattr(scraper, "public_max_attempts", None)
             if public_fetch_guard_enabled() and public_max_attempts is not None:
@@ -57,6 +60,24 @@ class ScraperOrchestrator:
                     log.attempts_per_scraper[scraper.name] = attempts
                     if scraper.name not in log.scrapers_tried:
                         log.scrapers_tried.append(scraper.name)
+
+                    browser_fallback_available = any(
+                        candidate.name == "playwright"
+                        for candidate in self.scrapers[scraper_index + 1:]
+                    )
+                    if (
+                        public_fetch_guard_enabled()
+                        and scraper.name == "basic"
+                        and browser_fallback_available
+                        and self._needs_browser_render(page.markdown)
+                    ):
+                        # Keep the safe HTTP result in case browser rendering
+                        # is blocked or times out. A thin response can still
+                        # provide useful evidence to the extractor.
+                        basic_fallback = page
+                        basic_fallback_log = log
+                        continue
+
                     return page, log
                 except ScrapeError as e:
                     last_error = e
@@ -68,11 +89,38 @@ class ScraperOrchestrator:
                     if attempts < max_attempts:
                         time.sleep(self.retry_policy.backoff(attempts))
 
+        if basic_fallback is not None and basic_fallback_log is not None:
+            basic_fallback_log.final_scraper = "basic"
+            basic_fallback_log.status = "success"
+            return basic_fallback, basic_fallback_log
+
         log.status = "failed"
         log.error = str(last_error)
         exc = ScrapeError(f"all scrapers failed for {url}: tried={log.scrapers_tried}: {last_error}")
         exc.log = log
         raise exc
+
+    @staticmethod
+    def _needs_browser_render(markdown: str) -> bool:
+        """Identify responses where rendering may recover useful evidence."""
+        text = " ".join(markdown.lower().split())
+        if len(text) < 350 or len(text.split()) < 40:
+            return True
+
+        challenge_markers = (
+            "enable javascript",
+            "javascript is required",
+            "checking your browser",
+            "verify you are human",
+            "verify that you are human",
+            "complete the security check",
+            "unusual traffic",
+            "automated requests",
+            "robot check",
+            "access denied",
+            "captcha",
+        )
+        return any(marker in text for marker in challenge_markers)
 
     def _pick_proxy(self, region: Optional[str], log: ScrapeLog, url: str) -> Optional[str]:
         """Strict geo policy: with PROXY_VERIFY=true a region that has a pool

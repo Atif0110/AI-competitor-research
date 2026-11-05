@@ -17,6 +17,15 @@ def build_scraper() -> ScraperOrchestrator:
     chain: list[BaseScraper] = []
 
     guarded = public_fetch_guard_enabled()
+
+    # Anonymous research runs on a small shared service. Start with the
+    # DNS-pinned HTTP fetcher, then spend browser resources only when that
+    # response looks like a JavaScript shell, a challenge page, or too little
+    # evidence. Private runs keep the richer provider-first chain below.
+    from .basic import BasicScraper
+    if guarded:
+        chain.append(BasicScraper())
+
     if settings.firecrawl_api_key and not guarded:
         from .firecrawl import FirecrawlScraper
         chain.append(FirecrawlScraper())
@@ -34,8 +43,8 @@ def build_scraper() -> ScraperOrchestrator:
     else:
         logger.warning("Playwright package unavailable; browser scraper is not installed")
 
-    from .basic import BasicScraper
-    chain.append(BasicScraper())  # always available as last resort
+    if not guarded:
+        chain.append(BasicScraper())  # always available as last resort
 
     return ScraperOrchestrator(chain)
 
