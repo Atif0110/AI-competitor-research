@@ -692,7 +692,9 @@ function ResearchPipeline({ status, events }) {
   const finished = status === 'completed' || status === 'failed';
 
   const counts = useMemo(() => {
-    const scraped = (events || []).filter((e) => e.event === 'scrape_succeeded').length;
+    const scraped = new Set((events || [])
+      .filter((e) => ['scrape_fetch_completed', 'scrape_succeeded'].includes(e.event) && e.url)
+      .map((e) => `${e.url}||${e.region || ''}`)).size;
     const extracted = (events || []).filter((e) => e.event === 'extraction_succeeded').length;
     const failed = (events || []).filter((e) => e.event === 'extraction_failed').length;
     const skipped = (events || []).filter((e) => e.event === 'extraction_skipped').length;
@@ -730,9 +732,9 @@ function ResearchPipeline({ status, events }) {
 
       <ol className="pipeline-events">
         {(events || []).slice(-4).reverse().map((event, index) => (
-          <li className={`event-row${event.event === 'extraction_failed' ? ' event-bad' : event.event === 'extraction_skipped' ? ' event-skipped' : ''}`} key={`${event.timestamp}-${index}`}>
+          <li className={`event-row${['extraction_failed', 'scrape_fetch_failed'].includes(event.event) ? ' event-bad' : event.event === 'extraction_skipped' ? ' event-skipped' : ''}`} key={`${event.timestamp}-${index}`}>
             <span className="event-time mono">{new Date(event.timestamp).toLocaleTimeString()}</span>
-            <span className="event-name">{event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : event.event === 'extraction_started' ? 'Extracting offer · waiting for model' : event.event === 'review_extraction_completed' ? `Review scan complete · ${num(event.reviews_found)} reviews` : event.event === 'discovery_entity_started' ? `Finding pages · ${event.company}` : event.event === 'discovery_entity_complete' ? `Pages checked · ${event.company}` : pretty(event.event)}</span>
+            <span className="event-name">{event.event === 'scrape_fetch_completed' ? `Page fetched · ${event.scraper || 'HTTP'}` : event.event === 'scrape_fetch_failed' ? 'Page fetch failed' : event.event === 'extraction_skipped' ? 'Skipped · no priced offer' : event.event === 'extraction_started' ? 'Extracting offer · waiting for model' : event.event === 'review_extraction_completed' ? `Review scan complete · ${num(event.reviews_found)} reviews` : event.event === 'discovery_entity_started' ? `Finding pages · ${event.company}` : event.event === 'discovery_entity_complete' ? `Pages checked · ${event.company}` : pretty(event.event)}</span>
             {(event.reason || event.error || event.product_name || event.website) && <small className="event-detail">{event.reason || event.error || event.product_name || event.website}</small>}
             {event.url && (
               <a href={event.url} target="_blank" rel="noreferrer" className="event-url mono">

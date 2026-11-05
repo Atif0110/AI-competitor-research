@@ -85,11 +85,20 @@ class PlaywrightScraper(BaseScraper):
 
                 try:
                     page = browser.new_page()
+
+                    def route_public_content(route):
+                        request = route.request
+                        if (
+                            not is_public_http_url(request.url)
+                            or request.resource_type in {"image", "media", "font"}
+                        ):
+                            route.abort()
+                        else:
+                            route.continue_()
+
                     page.route(
                         "**/*",
-                        lambda route: route.continue_()
-                        if is_public_http_url(route.request.url)
-                        else route.abort(),
+                        route_public_content,
                     )
 
                     page.goto(

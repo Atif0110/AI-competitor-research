@@ -465,7 +465,31 @@ class Pipeline:
                     "scrape_started", run_id=run_id, url=url, region=region,
                     index=index, total=len(items),
                 )
-                pending[key] = pool.submit(scraper.fetch, url, region=region)
+                future = pool.submit(scraper.fetch, url, region=region)
+                pending[key] = future
+
+                def report_fetch(
+                    completed,
+                    page_url=url,
+                    page_region=region,
+                    page_index=index,
+                ):
+                    try:
+                        _page, scrape_log = completed.result()
+                    except Exception as exc:
+                        self._progress(
+                            "scrape_fetch_failed", run_id=run_id, url=page_url,
+                            region=page_region, index=page_index, total=len(items),
+                            error=str(exc),
+                        )
+                    else:
+                        self._progress(
+                            "scrape_fetch_completed", run_id=run_id, url=page_url,
+                            region=page_region, index=page_index, total=len(items),
+                            scraper=scrape_log.final_scraper,
+                        )
+
+                future.add_done_callback(report_fetch)
         return pending
 
     def run(

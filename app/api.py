@@ -201,6 +201,7 @@ def _progress_for_job(job_id: str, event: dict) -> None:
 
 def _run_job(job_id: str, target: CompetitorTarget) -> None:
     events: list[dict] = []
+    progress_lock = threading.Lock()
     try:
         _set_job(
             job_id,
@@ -208,8 +209,9 @@ def _run_job(job_id: str, target: CompetitorTarget) -> None:
             started_at=datetime.now(timezone.utc).isoformat(),
         )
         def on_progress(event: dict) -> None:
-            events.append(event)
-            _progress_for_job(job_id, event)
+            with progress_lock:
+                events.append(event)
+                _progress_for_job(job_id, event)
         pipeline = Pipeline(store=_store, review_store=_reviews, progress_callback=on_progress)
         result = pipeline.run(target, run_id=job_id)
         result_payload = result.model_dump(mode="json")
