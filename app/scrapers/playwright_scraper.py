@@ -61,12 +61,13 @@ class PlaywrightScraper(BaseScraper):
                     if parsed:
                         kwargs["proxy"] = parsed
 
-                # Use the installed Chromium browser channel instead of
-                # Playwright's separate chromium-headless-shell executable.
-                browser = p.chromium.launch(
-                    headless=False,
-                    **kwargs,
-                )
+                launch_options = {"headless": pinned_proxy is not None, **kwargs}
+                if pinned_proxy is not None:
+                    # The Chromium channel uses full Chrome's newer headless
+                    # mode, avoiding an X server while retaining the real
+                    # browser implementation for public scraping.
+                    launch_options["channel"] = "chromium"
+                browser = p.chromium.launch(**launch_options)
 
                 try:
                     page = browser.new_page()
