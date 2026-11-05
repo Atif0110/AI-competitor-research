@@ -46,13 +46,18 @@ class ScraperOrchestrator:
             if (
                 public_fetch_guard_enabled()
                 and scraper.name == "playwright"
-                and isinstance(last_error, ScrapeError)
-                and "empty response body" in str(last_error).lower()
                 and self._is_bare_homepage(url)
+                and (
+                    basic_fallback is not None
+                    or (
+                        isinstance(last_error, ScrapeError)
+                        and "empty response body" in str(last_error).lower()
+                    )
+                )
             ):
-                # An empty site root is not useful pricing evidence and can
-                # trigger a costly browser session that has no product path
-                # to render. Keep browser fallback for specific pages.
+                # A thin site root is weak pricing evidence and can trigger a
+                # costly browser session. Keep the HTTP text and reserve
+                # browser fallback for specific product/category/search URLs.
                 continue
 
             max_attempts = self.retry_policy.max_retries
@@ -116,7 +121,7 @@ class ScraperOrchestrator:
     def _needs_browser_render(markdown: str) -> bool:
         """Identify responses where rendering may recover useful evidence."""
         text = " ".join(markdown.lower().split())
-        if len(text) < 350 or len(text.split()) < 40:
+        if len(text) < 160 or len(text.split()) < 24:
             return True
 
         challenge_markers = (
