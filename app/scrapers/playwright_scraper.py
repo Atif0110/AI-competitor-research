@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import nullcontext
 from typing import Optional
 
@@ -9,6 +10,12 @@ from .base import BaseScraper, ScrapeError, ScrapedPage, parse_proxy_url
 from app.url_safety import DNSPinningHTTPProxy, is_public_http_url, public_fetch_guard_enabled
 
 logger = logging.getLogger(__name__)
+_PUBLIC_BROWSER_SEMAPHORE = threading.BoundedSemaphore(1)
+
+
+def _browser_slot(guarded: bool):
+    """Bound public Chromium memory use while keeping private concurrency."""
+    return _PUBLIC_BROWSER_SEMAPHORE if guarded else nullcontext()
 
 
 class PlaywrightScraper(BaseScraper):
@@ -30,7 +37,7 @@ class PlaywrightScraper(BaseScraper):
                 "playwright not installed (pip install playwright)"
             ) from e
 
-        with sync_playwright() as p:
+        with _browser_slot(guarded), sync_playwright() as p:
             proxy_context = (
                 DNSPinningHTTPProxy(
                     connect_timeout=min(10, self._timeout()),

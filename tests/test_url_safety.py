@@ -326,6 +326,33 @@ def test_public_scraper_chain_includes_pinned_playwright(monkeypatch):
     assert manager.build_scraper().names == ["playwright", "basic"]
 
 
+def test_public_browser_sessions_are_serialized():
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.scrapers.playwright_scraper import _browser_slot
+
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def use_browser_slot(_index):
+        nonlocal active, maximum_active
+        with _browser_slot(guarded=True):
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(use_browser_slot, range(4)))
+
+    assert maximum_active == 1
+
+
 def test_pinned_connect_uses_validated_numeric_address(monkeypatch):
     import app.url_safety as url_safety
 
