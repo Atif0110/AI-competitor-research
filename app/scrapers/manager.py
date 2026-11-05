@@ -31,6 +31,8 @@ def build_scraper() -> ScraperOrchestrator:
             logger.info("scraper chain: Playwright enabled through the DNS-pinning proxy")
         else:
             logger.info("scraper chain: playwright available")
+    else:
+        logger.warning("Playwright package unavailable; browser scraper is not installed")
 
     from .basic import BasicScraper
     chain.append(BasicScraper())  # always available as last resort

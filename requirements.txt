@@ -15,6 +15,7 @@ groq>=0.9
 google-genai>=1.0
 
 # Scraping
+playwright==1.55.0
 firecrawl>=0.0.16
 
 # RAG / vector store
