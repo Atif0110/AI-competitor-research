@@ -4,8 +4,10 @@ from pydantic import ValidationError
 from app.api import DeepResearchRequest
 from app.schemas import Competitor, CompetitorTarget
 from app.url_safety import (
+    DNSPinningHTTPProxy,
     DNSPinnedHTTPAdapter,
     _DNSPinnedHTTPConnection,
+    _connect_public_socket,
     _resolve_public_addresses,
     create_public_session,
     is_public_http_url,
@@ -203,19 +205,201 @@ def test_dns_guard_activates_when_api_is_unauthenticated(monkeypatch):
     assert public_fetch_guard_enabled()
 
 
-def test_public_workspace_disables_unpinned_browser_and_vendor_scrapers(monkeypatch):
+def test_public_workspace_keeps_browser_scraper_behind_pinned_proxy(monkeypatch):
+    import sys
+    import types
+    from types import SimpleNamespace
+
     from app.config import settings
     from app.scrapers.base import ScrapeError
     from app.scrapers.firecrawl import FirecrawlScraper
     from app.scrapers.playwright_scraper import PlaywrightScraper
 
     monkeypatch.setattr(settings, "public_workspace_mode", True)
-    with pytest.raises(ScrapeError, match="Playwright is disabled"):
-        PlaywrightScraper()._fetch_once("https://example.com", None)
+
+    launch_options = {}
+    class Page:
+        url = "https://example.com/"
+
+        def route(self, _pattern, handler):
+            self.route_handler = handler
+
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_timeout(self, _milliseconds):
+            return None
+
+        def inner_text(self, _selector):
+            return "Rendered product listing"
+
+    page = Page()
+
+    class Browser:
+        def new_page(self):
+            return page
+
+        def close(self):
+            return None
+
+    class Chromium:
+        def launch(self, **kwargs):
+            launch_options.update(kwargs)
+            return Browser()
+
+    class PlaywrightContext:
+        def __enter__(self):
+            return SimpleNamespace(chromium=Chromium())
+
+        def __exit__(self, *_args):
+            return None
+
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = PlaywrightContext
+    playwright = types.ModuleType("playwright")
+    playwright.sync_api = sync_api
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+
+    class FakePinnedProxy:
+        url = "http://127.0.0.1:45678"
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        "app.scrapers.playwright_scraper.DNSPinningHTTPProxy",
+        FakePinnedProxy,
+    )
+    result = PlaywrightScraper()._fetch_once("https://example.com/", None)
+
+    assert result.markdown == "Rendered product listing"
+    assert result.proxy_used is None
+    assert launch_options["proxy"] == {
+        "server": FakePinnedProxy.url,
+        "bypass": "<-loopback>",
+    }
+    assert "--disable-quic" in launch_options["args"]
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launch_options["args"]
+
+    class Route:
+        def __init__(self, url):
+            self.request = SimpleNamespace(url=url)
+            self.continued = False
+            self.aborted = False
+
+        def continue_(self):
+            self.continued = True
+
+        def abort(self):
+            self.aborted = True
+
+    public_route = Route("https://cdn.example.com/app.js")
+    private_route = Route("http://127.0.0.1/admin")
+    page.route_handler(public_route)
+    page.route_handler(private_route)
+    assert public_route.continued and not public_route.aborted
+    assert private_route.aborted and not private_route.continued
 
     firecrawl = FirecrawlScraper()
     with pytest.raises(ScrapeError, match="Firecrawl is disabled"):
         firecrawl._fetch_once("https://example.com", None)
+
+
+def test_public_scraper_chain_includes_pinned_playwright(monkeypatch):
+    from app.config import settings
+    from app.scrapers import manager
+
+    monkeypatch.setattr(settings, "public_workspace_mode", True)
+    monkeypatch.setattr(settings, "firecrawl_api_key", "")
+    monkeypatch.setattr(manager.importlib.util, "find_spec", lambda name: object() if name == "playwright" else None)
+
+    assert manager.build_scraper().names == ["playwright", "basic"]
+
+
+def test_pinned_connect_uses_validated_numeric_address(monkeypatch):
+    import app.url_safety as url_safety
+
+    expected_socket = object()
+    connected = []
+    monkeypatch.setattr(
+        url_safety,
+        "_resolve_public_addresses",
+        lambda host, port: ["93.184.216.34"],
+    )
+    monkeypatch.setattr(
+        url_safety.socket,
+        "create_connection",
+        lambda address, timeout: connected.append((address, timeout)) or expected_socket,
+    )
+
+    assert _connect_public_socket("example.com", 443, timeout=4) is expected_socket
+    assert connected == [(("93.184.216.34", 443), 4)]
+
+
+def test_loopback_browser_proxy_rejects_private_urls_without_connecting():
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False
+    with DNSPinningHTTPProxy() as proxy:
+        response = session.get(
+            "http://127.0.0.1/admin",
+            proxies={"http": proxy.url},
+            timeout=2,
+        )
+    session.close()
+
+    assert response.status_code == 403
+    assert "blocked non-public" in response.text
+
+
+def test_loopback_browser_proxy_rejects_dns_rebinding_answers(monkeypatch):
+    import app.url_safety as url_safety
+    import requests
+
+    def reject_private_resolution(_host, _port):
+        raise ValueError("hostname resolved to a non-public address")
+
+    monkeypatch.setattr(url_safety, "_resolve_public_addresses", reject_private_resolution)
+    with DNSPinningHTTPProxy() as proxy:
+        response = requests.get(
+            "http://example.com/",
+            proxies={"http": proxy.url},
+            timeout=2,
+        )
+
+    assert response.status_code == 502
+    assert "upstream request failed" in response.text
+
+
+def test_loopback_browser_proxy_rejects_rebinding_https_tunnels(monkeypatch):
+    import socket
+    from urllib.parse import urlsplit
+
+    import app.url_safety as url_safety
+
+    def reject_private_resolution(_host, _port):
+        raise ValueError("hostname resolved to a non-public address")
+
+    monkeypatch.setattr(url_safety, "_resolve_public_addresses", reject_private_resolution)
+    with DNSPinningHTTPProxy() as proxy:
+        parsed = urlsplit(proxy.url)
+        with socket.create_connection((parsed.hostname, parsed.port), timeout=2) as client:
+            client.sendall(
+                b"CONNECT example.com:443 HTTP/1.1\r\n"
+                b"Host: example.com:443\r\n\r\n"
+            )
+            response = client.recv(1024)
+
+    assert response.startswith(b"HTTP/1.1 403 ")
+    assert b"blocked unsafe or unresolvable destination" in response
 
 
 def test_public_workspace_disables_remote_firecrawl_discovery(monkeypatch):

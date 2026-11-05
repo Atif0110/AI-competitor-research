@@ -1,4 +1,4 @@
-"""Build the scraping chain, keeping unpinned fetchers out of public mode."""
+"""Build the scraper chain without allowing unpinned public-mode fetchers."""
 from __future__ import annotations
 
 import importlib.util
@@ -25,11 +25,11 @@ def build_scraper() -> ScraperOrchestrator:
         logger.warning("firecrawl disabled for anonymous URL research; URL resolution is performed outside this network boundary")
 
     if importlib.util.find_spec("playwright"):
+        from .playwright_scraper import PlaywrightScraper
+        chain.append(PlaywrightScraper())
         if guarded:
-            logger.warning("playwright disabled for anonymous URL research; browser networking is not DNS-pinned")
+            logger.info("scraper chain: Playwright enabled through the DNS-pinning proxy")
         else:
-            from .playwright_scraper import PlaywrightScraper
-            chain.append(PlaywrightScraper())
             logger.info("scraper chain: playwright available")
 
     from .basic import BasicScraper
