@@ -396,7 +396,13 @@ def test_loopback_browser_proxy_rejects_rebinding_https_tunnels(monkeypatch):
                 b"CONNECT example.com:443 HTTP/1.1\r\n"
                 b"Host: example.com:443\r\n\r\n"
             )
-            response = client.recv(1024)
+            chunks = []
+            while True:
+                chunk = client.recv(1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            response = b"".join(chunks)
 
     assert response.startswith(b"HTTP/1.1 403 ")
     assert b"blocked unsafe or unresolvable destination" in response
