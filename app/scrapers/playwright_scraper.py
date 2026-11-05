@@ -74,10 +74,9 @@ class PlaywrightScraper(BaseScraper):
 
                 launch_options = {"headless": pinned_proxy is not None, **kwargs}
                 if pinned_proxy is not None:
-                    # The Chromium channel uses full Chrome's newer headless
-                    # mode, avoiding an X server while retaining the real
-                    # browser implementation for public scraping.
-                    launch_options["channel"] = "chromium"
+                    # Use Playwright's bundled headless shell for public text
+                    # extraction. It runs Chromium's rendering engine without
+                    # the extra resources of the full browser channel.
                     launch_options["timeout"] = navigation_timeout_ms
                 try:
                     browser = p.chromium.launch(**launch_options)
