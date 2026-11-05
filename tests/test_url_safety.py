@@ -287,7 +287,7 @@ def test_public_workspace_keeps_browser_scraper_behind_pinned_proxy(monkeypatch)
         "bypass": "<-loopback>",
     }
     assert launch_options["headless"] is True
-    assert launch_options["channel"] == "chromium"
+    assert "channel" not in launch_options
     assert 1_000 <= launch_options["timeout"] <= 20_000
     assert 1_000 <= page.goto_options["timeout"] <= 20_000
     assert "--disable-quic" in launch_options["args"]
