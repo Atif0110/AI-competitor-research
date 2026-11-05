@@ -278,7 +278,7 @@ class DeepResearchPipeline:
             result.coverage.provider_attempts = int(llm_end.get("provider_attempts", 0))
             result.coverage.providers_attempted = list(llm_end.get("providers_attempted", []))
             result.coverage.providers_used = list(llm_end.get("providers_used", []))
-            result.coverage.provider_fallbacks = list(llm_end.get("fallbacks", []))
+            result.coverage.provider_fallbacks = list(llm_end.get("fallback_routes", []))
 
             self.documents.update_run(
                 run_id,
@@ -311,7 +311,7 @@ class DeepResearchPipeline:
             result.coverage.provider_attempts = int(llm_end.get("provider_attempts", 0))
             result.coverage.providers_attempted = list(llm_end.get("providers_attempted", []))
             result.coverage.providers_used = list(llm_end.get("providers_used", []))
-            result.coverage.provider_fallbacks = list(llm_end.get("fallbacks", []))
+            result.coverage.provider_fallbacks = list(llm_end.get("fallback_routes", []))
             self.documents.update_run(
                 run_id,
                 status=ResearchStatus.failed.value,

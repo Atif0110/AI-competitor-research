@@ -61,6 +61,38 @@ def test_llm_usage_scope_tracks_calls_and_estimates():
     assert client.telemetry()["calls"] == 1
 
 
+def test_scoped_provider_fallback_preserves_metrics_pair_contract():
+    from app.llm.client import LLMError
+    from app.orchestrator import _provider_chain
+
+    class RateLimited:
+        def complete(self, messages):
+            raise LLMError("http 429: quota exceeded")
+
+    class Available:
+        def complete(self, messages):
+            return "answer"
+
+    client = LLMClient.__new__(LLMClient)
+    client._providers = [("apinex", RateLimited()), ("groq", Available())]
+    client._current = 0
+    client.calls = 0
+    client.estimated_tokens = 0
+    client.provider_attempts = 0
+    client.fallbacks = []
+    client.last_error = None
+    client._fallback_since = None
+    client._cooldowns = {}
+    client.cooldown_seconds = 60
+
+    with client.usage_scope():
+        assert client.complete("system", "question") == "answer"
+        telemetry = client.telemetry()
+        assert telemetry["fallbacks"] == [("apinex", "groq")]
+        assert telemetry["fallback_routes"] == ["apinex->groq"]
+        assert _provider_chain(client) == ["apinex", "groq"]
+
+
 def test_run_history_api_merges_research_paths_and_reopens_saved_job(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from fastapi.testclient import TestClient

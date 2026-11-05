@@ -1072,19 +1072,17 @@ def _provider_chain(
 
     chain: List[str] = []
 
-    for (
-        from_provider,
-        to_provider,
-    ) in telemetry.get(
-        "fallbacks",
-        [],
-    ):
-        chain.extend(
-            [
-                from_provider,
-                to_provider,
-            ]
-        )
+    for fallback in telemetry.get("fallbacks", []):
+        # Accept the current pair shape and old/display strings defensively so
+        # provider diagnostics can never fail a completed scrape run.
+        if isinstance(fallback, str):
+            pair = fallback.split("->", 1)
+        elif isinstance(fallback, (tuple, list)) and len(fallback) == 2:
+            pair = fallback
+        else:
+            continue
+        if len(pair) == 2 and all(pair):
+            chain.extend(pair)
 
     chain.append(
         telemetry["provider"]

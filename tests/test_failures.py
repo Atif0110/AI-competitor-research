@@ -189,6 +189,70 @@ def test_competitive_run_keeps_pricing_and_reports_non_offer_as_skip(tmp_path, m
     assert store.recent_runs(limit=1)[0]["extractions_skipped"] == 1
 
 
+def test_all_skipped_pages_complete_when_llm_falls_back(tmp_path, monkeypatch):
+    import app.orchestrator as orchestration
+    from app.llm.client import LLMClient, LLMError
+    from app.llm.extractor import StructuredExtractor
+    from app.scrapers.base import ScrapeLog
+
+    monkeypatch.setattr(settings, "database_url", "sqlite:///" + str(tmp_path / "skip-fallback.db"))
+    monkeypatch.setattr(settings, "vector_store_dir", str(tmp_path / "vectors"))
+    monkeypatch.setattr(settings, "checkpoint_dir", str(tmp_path / "checkpoints"))
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    monkeypatch.setattr(settings, "rate_limit_min_interval", 0)
+    monkeypatch.setattr(
+        orchestration,
+        "discover_urls_for_entity",
+        lambda website, focus_products=(): ["https://coda.io/pricing"],
+    )
+
+    class RateLimited:
+        def complete(self, messages):
+            raise LLMError("http 429: quota exceeded")
+
+    class NoOffer:
+        def complete(self, messages):
+            return '{"skip": true}'
+
+    client = LLMClient.__new__(LLMClient)
+    client._providers = [("apinex", RateLimited()), ("groq", NoOffer())]
+    client._current = 0
+    client.calls = 0
+    client.estimated_tokens = 0
+    client.provider_attempts = 0
+    client.fallbacks = []
+    client.last_error = None
+    client._fallback_since = None
+    client._cooldowns = {}
+    client.cooldown_seconds = 60
+
+    class Scraper:
+        def fetch(self, url, region=None):
+            return (
+                ScrapedPage(url=url, markdown="# Plans\nPricing is not listed here.", region=region),
+                ScrapeLog(url=url, region=region),
+            )
+
+    store = OfferStore()
+    pipeline = Pipeline(
+        store=store,
+        review_store=ReviewStore(),
+        extractor=StructuredExtractor(client),
+        scraper=Scraper(),
+    )
+    result = pipeline.run(
+        CompetitorTarget(company="Coda", website="https://coda.io", regions=["US"]),
+        run_id="skip-fallback-regression",
+    )
+
+    assert result.pages_scraped == 1
+    assert result.extractions_ok == 0
+    assert result.extractions_skipped == 1
+    assert result.metrics["providers_used"] == ["apinex", "groq"]
+    assert result.metrics["fallbacks"] == 1
+    assert store.recent_runs(limit=1)[0]["run_id"] == result.run_id
+
+
 # ---------------- verified-or-fail proxies ----------------
 def _verify_sg(proxy):
     return "SG"

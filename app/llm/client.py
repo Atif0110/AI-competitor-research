@@ -776,7 +776,7 @@ class LLMClient:
                     if usage is not None:
                         usage["fallbacks_count"] += 1
                         usage["provider_fallbacks"].append(
-                            f"{previous_provider}->{name}"
+                            (previous_provider, name)
                         )
 
                     self._fallback_since = (
@@ -847,20 +847,25 @@ class LLMClient:
 
     def telemetry(self) -> dict:
         usage = _ACTIVE_USAGE.get()
+        fallbacks = usage["provider_fallbacks"] if usage is not None else self.fallbacks
+        fallback_routes = [f"{source}->{destination}" for source, destination in fallbacks]
         return {
             "provider": self.provider_name,
-            "fallback_used": bool(usage["provider_fallbacks"] if usage is not None else self.fallbacks),
+            "fallback_used": bool(fallbacks),
             "fallback_from": (
-                self.fallbacks[0][0]
-                if self.fallbacks
+                fallbacks[0][0]
+                if fallbacks
                 else None
             ),
             "fallback_to": (
-                self.fallbacks[0][1]
-                if self.fallbacks
+                fallbacks[0][1]
+                if fallbacks
                 else None
             ),
-            "fallbacks": list(usage["provider_fallbacks"]) if usage is not None else list(self.fallbacks),
+            # Keep the historical pair contract used by _provider_chain and
+            # add a display-friendly representation for stored run coverage.
+            "fallbacks": list(fallbacks),
+            "fallback_routes": fallback_routes,
             "providers_attempted": list(usage["providers_attempted"]) if usage is not None else [],
             "providers_used": list(usage["providers_used"]) if usage is not None else [],
             "calls": usage["calls"] if usage is not None else self.calls,
