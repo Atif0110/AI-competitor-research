@@ -43,6 +43,18 @@ class ScraperOrchestrator:
         basic_fallback_log: Optional[ScrapeLog] = None
 
         for scraper_index, scraper in enumerate(self.scrapers):
+            if (
+                public_fetch_guard_enabled()
+                and scraper.name == "playwright"
+                and isinstance(last_error, ScrapeError)
+                and "empty response body" in str(last_error).lower()
+                and self._is_bare_homepage(url)
+            ):
+                # An empty site root is not useful pricing evidence and can
+                # trigger a costly browser session that has no product path
+                # to render. Keep browser fallback for specific pages.
+                continue
+
             max_attempts = self.retry_policy.max_retries
             public_max_attempts = getattr(scraper, "public_max_attempts", None)
             if public_fetch_guard_enabled() and public_max_attempts is not None:
@@ -121,6 +133,11 @@ class ScraperOrchestrator:
             "captcha",
         )
         return any(marker in text for marker in challenge_markers)
+
+    @staticmethod
+    def _is_bare_homepage(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.path in {"", "/"} and not parsed.query
 
     def _pick_proxy(self, region: Optional[str], log: ScrapeLog, url: str) -> Optional[str]:
         """Strict geo policy: with PROXY_VERIFY=true a region that has a pool

@@ -360,7 +360,7 @@ DNS-pinned HTTP
 Playwright through the DNS-pinning proxy
 ```
 
-If browser rendering fails, the public pipeline retains the HTTP response for extraction. This keeps browser rendering available for dynamic sites while limiting its use to pages where it can improve the evidence.
+If browser rendering fails, the public pipeline retains the HTTP response for extraction. An empty bare homepage is marked unavailable without launching Chromium; browser escalation remains enabled for product, category, and search pages. This keeps browser rendering available for dynamic sites while limiting its use to pages where it can improve the evidence.
 
 **Important real-world limitation**
 
