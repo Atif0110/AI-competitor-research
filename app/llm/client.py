@@ -1,17 +1,15 @@
 """Provider-agnostic LLM client with explicit provider selection.
 
 Supported providers:
-    - apinex  (OpenAI-compatible gateway; `free/*` models on a daily allowance)
     - gemini
     - groq
     - openai
     - anthropic
     - demo
 
-Production deployments should explicitly select a real provider, e.g.
-LLM_PROVIDER=apinex, and set its API key in the environment.
+Production deployments should configure Gemini and/or Groq API keys.
 
-Fallback order is free-allowance first (apinex -> groq -> gemini) then paid
+Fallback order is free-allowance first (gemini -> groq) then paid
 (anthropic -> openai), so a zero-budget deployment stays on free models and
 only touches metered keys when every free option failed. A provider that
 returns a quota/rate-limit/availability error is put in cooldown instead of
@@ -36,12 +34,12 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 _ACTIVE_USAGE = ContextVar("llm_active_usage", default=None)
 
-_KNOWN_PROVIDERS = ("apinex", "gemini", "groq", "openai", "anthropic")
+_KNOWN_PROVIDERS = ("gemini", "groq", "openai", "anthropic")
 
 # Free-allowance providers are always attempted before metered ones so a
-# zero-budget deployment keeps working (apinex free/* -> groq -> gemini),
+# zero-budget deployment keeps working (gemini -> groq),
 # and paid keys are only touched when every free option failed.
-_FREE_FIRST = ("apinex", "groq", "gemini")
+_FREE_FIRST = ("gemini", "groq")
 _PAID_LAST = ("anthropic", "openai")
 
 _KEY_PREFIX = {
@@ -51,7 +49,6 @@ _KEY_PREFIX = {
 }
 
 _MODEL_SETTINGS = {
-    "apinex": "apinex_model",
     "gemini": "gemini_model",
     "groq": "groq_model",
     "openai": "openai_model",
@@ -85,23 +82,28 @@ def _resolve_provider_order() -> List[str]:
     """Resolve the configured provider chain (free tier first).
 
     Explicit provider:
-        apinex/gemini/groq/openai/anthropic -> that provider first
+        gemini/groq/openai/anthropic -> that provider first
 
     Demo:
         demo -> demo only
 
     Auto / fallback:
-        apinex -> groq -> gemini -> anthropic -> openai, filtered to the
+        gemini -> groq -> anthropic -> openai, filtered to the
         providers that actually have a key. Free allowances lead so an
         unmetered deployment never silently starts spending money.
     """
     forced = settings.llm_provider
 
+    if forced not in {"auto", "demo", *_KNOWN_PROVIDERS}:
+        raise LLMError(
+            f"Unsupported LLM_PROVIDER '{forced}'. Choose auto, gemini, groq, "
+            "openai, anthropic, or demo."
+        )
+
     if forced == "demo":
         return ["demo"]
 
     configured = {
-        "apinex": bool(getattr(settings, "apinex_api_key", None)),
         "groq": bool(settings.groq_api_key),
         "gemini": bool(getattr(settings, "gemini_api_key", None)),
         "anthropic": bool(settings.anthropic_api_key),
@@ -340,63 +342,6 @@ class _AnthropicClient:
         )
 
 
-class _ApiNexClient:
-    """APInex provider (OpenAI-compatible gateway, free-tier first).
-
-    Uses plain HTTP so the gateway works without any provider SDK installed
-    and so quota/rate-limit responses can be surfaced with their real status
-    code instead of being swallowed by an SDK retry policy.
-    """
-
-    def complete(self, messages: List[ChatMessage]) -> str:
-        import requests
-
-        base = settings.apinex_base_url.rstrip("/")
-        payload = {
-            "model": settings.apinex_model,
-            "messages": [
-                {"role": m.role, "content": m.content}
-                for m in messages
-            ],
-            "temperature": 0,
-            "max_tokens": settings.apinex_max_output_tokens,
-        }
-
-        try:
-            response = requests.post(
-                f"{base}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.apinex_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=settings.apinex_timeout_seconds,
-            )
-        except Exception as exc:
-            raise LLMError(
-                f"apinex request failed: {exc}"
-            ) from exc
-
-        if response.status_code >= 400:
-            # Keep the status code in the message: the extractor uses it to
-            # stop retrying on quota/rate-limit failures.
-            raise LLMError(
-                f"apinex http {response.status_code}: "
-                f"{_error_excerpt(response.text)}"
-            )
-
-        try:
-            data = response.json()
-            return (
-                data["choices"][0]["message"].get("content") or ""
-            )
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise LLMError(
-                "apinex returned an unexpected payload: "
-                f"{_error_excerpt(exc)}"
-            ) from exc
-
-
 def _error_excerpt(text: str, limit: int = 300) -> str:
     """Collapse a provider error body into one log-safe line."""
     collapsed = " ".join(str(text or "").split())
@@ -626,7 +571,6 @@ class LLMClient:
         provider_order = _resolve_provider_order()
 
         factories = {
-            "apinex": _ApiNexClient,
             "gemini": _GeminiClient,
             "groq": _GroqClient,
             "openai": _OpenAIClient,
@@ -634,7 +578,6 @@ class LLMClient:
         }
 
         keys = {
-            "apinex": getattr(settings, "apinex_api_key", None),
             "gemini": getattr(settings, "gemini_api_key", None),
             "groq": settings.groq_api_key,
             "openai": settings.openai_api_key,

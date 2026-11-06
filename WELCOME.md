@@ -20,21 +20,18 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env`.
 
-The router is **free-tier first**. It walks APInex → Groq → Gemini → Anthropic/OpenAI → demo, and a
+The router is **free-tier first**. It walks Gemini → Groq → Anthropic/OpenAI → demo, and a
 provider only joins the chain when its key is present, so you never pay for a model you did not key.
 
 ```env
 # Free tier, no card needed (OpenAI-compatible gateway)
-APINEX_API_KEY=...
-APINEX_BASE_URL=https://apinex.bond/v1
-APINEX_MODEL=free/all
 
 # Free tiers
 GROQ_API_KEY=...
 GROQ_MODEL=openai/gpt-oss-120b
 
 GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.8-flash
 
 # Paid fallbacks, only used when explicitly keyed
 ANTHROPIC_API_KEY=...
@@ -46,7 +43,7 @@ OPENAI_MODEL=gpt-5.6-luna
 
 Add as many as you like. When a provider fails or rate-limits, the router moves on and puts that
 provider in a short cooldown. `LLM_PROVIDER=auto` resolves the chain from the keys that exist;
-`LLM_PROVIDER=apinex|groq|gemini|anthropic|openai|demo` pins a primary.
+`LLM_PROVIDER=gemini|groq|anthropic|openai|demo` pins a primary.
 
 ### 3. Optional scraping key
 
@@ -102,7 +99,9 @@ Never commit `.env` or real API keys.
 - Engineering checks pass locally and in CI (backend tests + frontend build).
 - Extraction quality has been verified with automated tests, **not** against a hand-labelled
   benchmark; no accuracy percentage is claimed here.
-- Live provider and web-tool payloads are unverified without real keys. APInex web-tool request
   shapes are implemented defensively and degrade to normal crawling when they fail.
 - Deployment is configured through `render.yaml` (API + static frontend), but live deploys still
   require setting secrets in the Render dashboard.
+
+
+\n

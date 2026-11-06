@@ -470,8 +470,8 @@ def test_loopback_browser_proxy_rejects_rebinding_https_tunnels(monkeypatch):
         parsed = urlsplit(proxy.url)
         with socket.create_connection((parsed.hostname, parsed.port), timeout=2) as client:
             client.sendall(
-                b"CONNECT example.com:443 HTTP/1.1\r\n"
-                b"Host: example.com:443\r\n\r\n"
+                b"CONNECT example.com:443 HTTP/1.1\n"
+                b"Host: example.com:443\n\n"
             )
             chunks = []
             while True:
@@ -494,10 +494,8 @@ def test_public_workspace_disables_remote_firecrawl_discovery(monkeypatch):
         discover_firecrawl("https://example.com")
 
 
-def test_public_workspace_disables_remote_url_contents_provider(monkeypatch):
-    from app.config import settings
-    from app.research.sources import ApiNexSearch
+def test_search_uses_keyless_provider_without_apinex():
+    from app.research.sources import build_search
 
-    monkeypatch.setattr(settings, "public_workspace_mode", True)
-    source = ApiNexSearch(api_key="placeholder", base_url="https://api.example.com")
-    assert source.contents("https://example.com") is None
+    assert build_search().name == "duckduckgo"
+\r\n

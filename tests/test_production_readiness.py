@@ -49,7 +49,6 @@ def test_cors_always_keeps_live_frontend_origin(monkeypatch):
 
 def test_provider_auto_selection(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "auto")
-    monkeypatch.setattr(settings, "apinex_api_key", None)
     monkeypatch.setattr(settings, "anthropic_api_key", "sk-ant-test")
     monkeypatch.setattr(settings, "openai_api_key", None)
     monkeypatch.setattr(settings, "groq_api_key", None)
@@ -64,30 +63,29 @@ def test_provider_auto_selection(monkeypatch):
 def test_free_tier_providers_lead_the_chain(monkeypatch):
     """Free allowances must be attempted before metered providers."""
     monkeypatch.setattr(settings, "llm_provider", "auto")
-    monkeypatch.setattr(settings, "apinex_api_key", "sk-apinex-test")
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
     monkeypatch.setattr(settings, "groq_api_key", "gsk-test")
     monkeypatch.setattr(settings, "anthropic_api_key", "sk-ant-test")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     order = _resolve_provider_order()
-    assert order == ["apinex", "groq", "anthropic", "openai"]
+    assert order == ["gemini", "groq", "anthropic", "openai"]
     assert settings.provider_tiers == {
-        "apinex": "free", "groq": "free", "anthropic": "paid", "openai": "paid",
+        "gemini": "free", "groq": "free", "anthropic": "paid", "openai": "paid",
     }
 
 
 def test_forced_provider_leads_then_free_fallbacks(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "anthropic")
-    monkeypatch.setattr(settings, "apinex_api_key", "sk-apinex-test")
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
     monkeypatch.setattr(settings, "groq_api_key", "gsk-test")
     monkeypatch.setattr(settings, "anthropic_api_key", "sk-ant-test")
     monkeypatch.setattr(settings, "openai_api_key", None)
-    assert _resolve_provider_order() == ["anthropic", "apinex", "groq"]
+    assert _resolve_provider_order() == ["anthropic", "gemini", "groq"]
 
 
 def test_forced_provider_without_key_raises(monkeypatch):
     from app.llm.client import LLMError
     monkeypatch.setattr(settings, "llm_provider", "apinex")
-    monkeypatch.setattr(settings, "apinex_api_key", None)
     with pytest.raises(LLMError):
         _resolve_provider_order()
 
@@ -97,7 +95,8 @@ def test_health_reports_free_tier_and_models(monkeypatch):
     client = TestClient(app)
     body = client.get("/health").json()
     assert "provider_tiers" in body
-    assert "llm_models" in body and "apinex" in body["llm_models"]
+    assert "llm_models" in body and "gemini" in body["llm_models"]
+    assert "apinex" not in body["llm_models"]
     assert "llm_provider_chain" in body
 
 
@@ -106,17 +105,17 @@ def test_provider_quota_error_triggers_cooldown(monkeypatch):
     from app.llm.client import LLMClient, LLMError
 
     monkeypatch.setattr(settings, "llm_provider", "auto")
-    monkeypatch.setattr(settings, "apinex_api_key", "sk-apinex-test")
+    monkeypatch.setattr(settings, "gemini_api_key", "AIza-test")
     monkeypatch.setattr(settings, "groq_api_key", "gsk-test")
 
-    calls = {"apinex": 0, "groq": 0}
+    calls = {"gemini": 0, "groq": 0}
 
     class _RateLimited:
-        name = "apinex"
+        name = "gemini"
 
         def complete(self, messages):
-            calls["apinex"] += 1
-            raise LLMError("apinex http 429: quota exceeded")
+            calls["gemini"] += 1
+            raise LLMError("gemini http 429: quota exceeded")
 
     class _Good:
         name = "groq"
@@ -126,7 +125,7 @@ def test_provider_quota_error_triggers_cooldown(monkeypatch):
             return "ok"
 
     client = LLMClient.__new__(LLMClient)
-    client._providers = [("apinex", _RateLimited()), ("groq", _Good())]
+    client._providers = [("gemini", _RateLimited()), ("groq", _Good())]
     client._current = 0
     client.calls = 0
     client.provider_attempts = 0
@@ -138,9 +137,9 @@ def test_provider_quota_error_triggers_cooldown(monkeypatch):
 
     assert client.complete("s", "u") == "ok"
     assert client.complete("s", "u") == "ok"
-    # apinex failed once, then stayed in cooldown for the second call
-    assert calls == {"apinex": 1, "groq": 2}
-    assert "apinex" in client.telemetry()["cooldown_providers"]
+    # Gemini failed once, then stayed in cooldown for the second call.
+    assert calls == {"gemini": 1, "groq": 2}
+    assert "gemini" in client.telemetry()["cooldown_providers"]
 
 
 def test_report_run_id_sanitised_before_fs(monkeypatch):

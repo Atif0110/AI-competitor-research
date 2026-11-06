@@ -4,9 +4,8 @@ Topic research needs pages the crawler cannot reach by following links, so this
 module provides three interchangeable search backends plus a content-fetch
 fallback for pages that block us:
 
-1. ``ApiNexSearch``  - the configured APInex gateway (web search tool).
-2. ``DuckDuckGoSearch`` - keyless HTML endpoint, the zero-cost default.
-3. ``NullSearch``    - honest no-op used when search is unavailable.
+1. ``DuckDuckGoSearch`` - keyless HTML endpoint, the zero-cost default.
+2. ``NullSearch``    - honest no-op used when search is unavailable.
 
 Every backend reports which one it is so the report can state where its
 sources came from instead of implying broader coverage than it has.
@@ -20,10 +19,8 @@ from html.parser import HTMLParser
 from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
-from app.config import settings
 from app.research.fetching import _USER_AGENT, normalize_link
 from app.research.models import SearchHit
-from app.url_safety import is_public_http_url, public_fetch_guard_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -47,72 +44,6 @@ class NullSearch(SearchBackend):
 
     def search(self, query: str, limit: int = 8) -> List[SearchHit]:
         return []
-
-
-class ApiNexSearch(SearchBackend):
-    """APInex web tools (POST /v1/tools/web/search).
-
-    Enabled only when an APInex key is configured. Every response shape is
-    parsed defensively: an upstream change must degrade to "no results",
-    never crash a research run.
-    """
-
-    name = "apinex"
-    available = True
-
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        self.api_key = api_key if api_key is not None else settings.apinex_api_key
-        self.base_url = (base_url or settings.apinex_base_url).rstrip("/")
-        self.enabled = settings.apinex_web_tools
-
-    def _post(self, path: str, payload: dict, timeout: int = 45):
-        import requests
-
-        try:
-            response = requests.post(
-                f"{self.base_url}{path}",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=timeout,
-            )
-        except Exception as exc:
-            logger.info("apinex tool %s failed: %s", path, exc)
-            return None
-        if response.status_code >= 400:
-            logger.info(
-                "apinex tool %s returned %s: %s",
-                path,
-                response.status_code,
-                response.text[:200],
-            )
-            return None
-        try:
-            return response.json()
-        except ValueError:
-            logger.info("apinex tool %s returned non-JSON", path)
-            return None
-
-    def search(self, query: str, limit: int = 8) -> List[SearchHit]:
-        if not (self.api_key and self.enabled):
-            return []
-        data = self._post(
-            "/tools/web/search",
-            {"query": query, "limit": limit, "max_results": limit},
-        )
-        return _hits_from_payload(data, limit, origin="apinex-search")
-
-    def contents(self, url: str) -> Optional[str]:
-        # This endpoint fetches the supplied URL on APINEX's infrastructure,
-        # outside our DNS-pinned transport. Keep it disabled for public input.
-        if public_fetch_guard_enabled() or not is_public_http_url(url):
-            return None
-        if not (self.api_key and self.enabled):
-            return None
-        data = self._post("/tools/web/contents", {"urls": [url], "format": "markdown"})
-        return _text_from_payload(data)
 
 
 class _DuckDuckGoParser(HTMLParser):
@@ -207,98 +138,14 @@ class DuckDuckGoSearch(SearchBackend):
         return hits
 
 
-def _hits_from_payload(data, limit: int, origin: str) -> List[SearchHit]:
-    """Parse a web-search payload without assuming one exact shape."""
-    if not isinstance(data, dict):
-        return []
-    candidates = (
-        data.get("results")
-        or data.get("data")
-        or data.get("items")
-        or data.get("web")
-        or []
-    )
-    if isinstance(candidates, dict):
-        candidates = candidates.get("results") or candidates.get("items") or []
-    if not isinstance(candidates, list):
-        return []
-
-    hits: List[SearchHit] = []
-    for item in candidates:
-        if isinstance(item, str):
-            url = normalize_link(item, "https://duckduckgo.com")
-            if url:
-                hits.append(SearchHit(url=url, origin=origin))
-            continue
-        if not isinstance(item, dict):
-            continue
-        url = (
-            item.get("url")
-            or item.get("link")
-            or item.get("source_url")
-            or item.get("href")
-        )
-        if not url:
-            continue
-        normalized = normalize_link(str(url), "https://duckduckgo.com")
-        if not normalized:
-            continue
-        hits.append(
-            SearchHit(
-                url=normalized,
-                title=str(item.get("title") or item.get("name") or "")[:300],
-                snippet=str(
-                    item.get("snippet") or item.get("description") or item.get("summary") or ""
-                )[:600],
-                origin=origin,
-            )
-        )
-        if len(hits) >= limit:
-            break
-    return hits
-
-
-def _text_from_payload(data) -> Optional[str]:
-    if not isinstance(data, dict):
-        return None
-    candidates = (
-        data.get("contents")
-        or data.get("results")
-        or data.get("data")
-        or data.get("content")
-        or data.get("markdown")
-    )
-    if isinstance(candidates, str):
-        return candidates
-    if isinstance(candidates, list):
-        parts = []
-        for item in candidates:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                body = (
-                    item.get("markdown")
-                    or item.get("content")
-                    or item.get("text")
-                    or item.get("html")
-                )
-                if isinstance(body, str):
-                    parts.append(body)
-        return "\n\n".join(p for p in parts if p) or None
-    return None
-
-
 def build_search(enabled: bool = True) -> SearchBackend:
     """Pick the best available search backend.
 
-    Order: APInex web tools (best structured results) -> keyless DuckDuckGo ->
-    nothing. Research never fails because search is unavailable; it just
-    reports fewer external sources.
+    Order: keyless DuckDuckGo -> nothing. Research never fails because search
+    is unavailable; it just reports fewer external sources.
     """
     if not enabled:
         return NullSearch()
-    if settings.apinex_api_key and settings.apinex_web_tools:
-        return ApiNexSearch()
     return DuckDuckGoSearch()
 
 

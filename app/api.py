@@ -427,13 +427,12 @@ def create_app():
             "llm_provider_chain": client.chain,
             "provider_tiers": settings.provider_tiers,
             "llm_models": {
-                "apinex": settings.apinex_model if settings.apinex_api_key else None,
                 "openai": settings.openai_model if settings.openai_api_key else None,
                 "anthropic": settings.anthropic_model if settings.anthropic_api_key else None,
                 "groq": settings.groq_model if settings.groq_api_key else None,
                 "gemini": settings.gemini_model if settings.gemini_api_key else None,
             },
-            "web_tools": bool(settings.apinex_api_key and settings.apinex_web_tools),
+            "web_tools": False,
             "deep_research": {
                 "enabled": settings.deep_llm_enabled,
                 "max_pages": settings.deep_max_pages,

@@ -55,7 +55,6 @@ Target + Competitors
         ▼
  Structured LLM Extraction
         │
-        ├── APInex (free tier)
         ├── Groq / Gemini (free tier)
         ├── Anthropic / OpenAI
         └── Demo provider
@@ -86,16 +85,11 @@ Evidence + Observation Storage
 The application routes every model call through a single provider chain that prefers **free-tier providers** and only falls through to paid providers when a key is actually configured:
 
 ```text
-APInex (free models) → Groq (free tier) → Gemini (free tier) → Anthropic / OpenAI → demo
+Gemini (free tier) → Groq (free tier) → Anthropic / OpenAI → demo
 ```
 
 Providers in order:
 
-- **APInex** — OpenAI-compatible gateway (`https://apinex.bond/v1`). Free model IDs include
-  `free/all`, `free/gpt-6-luna`, `free/gpt-5.6-luna`, `free/claude-sonnet-4.6`,
-  `free/gemini-3.8-flash`, `free/deepseek-v4.1-flash`, `free/glm-5.3-flash`, `free/kimi-k3`.
-  Set `APINEX_API_KEY` to enable it; `APINEX_WEB_TOOLS=true` additionally exposes its
-  `/tools/web/search`, `/tools/web/contents` and `/tools/web/research` endpoints to the crawler.
 - **Groq** and **Google Gemini** free tiers
 - **Anthropic** / **OpenAI** (paid, only used when a key is present)
 - Deterministic demo provider (no key, no network, fully offline)
@@ -106,7 +100,6 @@ Supported modes include:
 
 | Configuration | Behavior |
 |---|---|
-| `apinex` | APInex first |
 | `gemini` | Gemini first |
 | `groq` | Groq first |
 | `openai` | OpenAI first |
@@ -526,8 +519,6 @@ horizontally without shared coordination.
 ```
 API_KEY=your-long-random-string
 API_KEY_REQUIRED=true
-APINEX_API_KEY=your-apinex-key
-APINEX_BASE_URL=https://api.apinex.bond/v1
 CORS_ORIGINS=https://your-frontend-url.onrender.com
 GROQ_API_KEY=your-key-if-you-have
 GEMINI_API_KEY=your-key-if-you-have
@@ -651,7 +642,6 @@ API_KEY_REQUIRED=true
 PUBLIC_WORKSPACE_MODE=true
 API_KEY=<optional server-side secret — never put this in the frontend>
 CORS_ORIGINS=https://ai-competitor-research-web.onrender.com
-APINEX_API_KEY=<your provider key>
 ```
 
 Public workspace mode lets visitors run research without entering an API key. Keep provider keys on Northflank. The backend applies stricter hourly and concurrent-run limits when public mode is enabled. `API_KEY` can remain in Northflank for switching back to private mode; it is never sent to the browser.
@@ -776,7 +766,7 @@ tests/                   Unit, failure-mode and production-readiness tests
 - [x] Core research pipeline
 - [x] Deep research engine (URL/Topic/Compare)
 - [x] Research chat (grounded, cited, gap-aware)
-- [x] Free-tier-first LLM routing (APInex → Groq → Gemini → Paid → Demo)
+- [x] Free-tier-first LLM routing (Gemini → Groq → Paid → Demo)
 - [x] Provider fallback with cooldowns
 - [x] Research chat (grounded, cited, gap-aware)
 - [x] API security (API key + CORS)
@@ -809,3 +799,6 @@ For deployment, configure secrets through the deployment platform's environment/
 ## License
 
 See the repository's license file for the applicable project license.
+
+
+\n

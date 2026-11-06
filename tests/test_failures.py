@@ -215,7 +215,7 @@ def test_all_skipped_pages_complete_when_llm_falls_back(tmp_path, monkeypatch):
             return '{"skip": true}'
 
     client = LLMClient.__new__(LLMClient)
-    client._providers = [("apinex", RateLimited()), ("groq", NoOffer())]
+    client._providers = [("gemini", RateLimited()), ("groq", NoOffer())]
     client._current = 0
     client.calls = 0
     client.estimated_tokens = 0
@@ -248,7 +248,7 @@ def test_all_skipped_pages_complete_when_llm_falls_back(tmp_path, monkeypatch):
     assert result.pages_scraped == 1
     assert result.extractions_ok == 0
     assert result.extractions_skipped == 1
-    assert result.metrics["providers_used"] == ["apinex", "groq"]
+    assert result.metrics["providers_used"] == ["gemini", "groq"]
     assert result.metrics["fallbacks"] == 1
     assert store.recent_runs(limit=1)[0]["run_id"] == result.run_id
 

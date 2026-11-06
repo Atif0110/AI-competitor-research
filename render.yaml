@@ -24,13 +24,9 @@ services:
         value: "true"
       - key: API_KEY
         sync: false
-      # Free-first provider chain. Add APINEX_API_KEY for the free tier.
-      - key: APINEX_BASE_URL
-        value: https://apinex.bond/v1
-      - key: APINEX_MODEL
-        value: free/all
-      - key: APINEX_API_KEY
-        sync: false
+      # Free-first provider chain: Gemini primary, Groq fallback.
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
       - key: GROQ_API_KEY
         sync: false
       - key: GEMINI_API_KEY

@@ -243,7 +243,7 @@ class Settings:
     gemini_model: str = field(
         default_factory=lambda: _str_env(
             "GEMINI_MODEL",
-            "gemini-2.5-flash",
+            "gemini-3.8-flash",
         )
     )
 
@@ -297,52 +297,6 @@ class Settings:
 
     anthropic_base_url: str | None = field(
         default_factory=lambda: _optional_env("ANTHROPIC_BASE_URL")
-    )
-
-    # ------------------------------------------------------------------
-    # APInex (free-tier first aggregator)
-    #
-    # APInex exposes an OpenAI-compatible endpoint plus agent tools
-    # (web search / contents / research). Free models are addressed with a
-    # `free/` prefix and are covered by a daily free-token allowance that
-    # resets at 00:00 UTC, so the default model is a free one.
-    # ------------------------------------------------------------------
-
-    apinex_api_key: str | None = field(
-        default_factory=lambda: _optional_env("APINEX_API_KEY")
-    )
-
-    apinex_base_url: str = field(
-        default_factory=lambda: _str_env(
-            "APINEX_BASE_URL",
-            "https://apinex.bond/v1",
-        )
-    )
-
-    apinex_model: str = field(
-        default_factory=lambda: _str_env(
-            "APINEX_MODEL",
-            "free/gpt-5.6-luna",
-        )
-    )
-
-    apinex_web_tools: bool = field(
-        default_factory=lambda: _bool_env(
-            "APINEX_WEB_TOOLS",
-            True,
-        )
-    )
-
-    apinex_timeout_seconds: int = field(
-        default_factory=lambda: int(
-            os.getenv("APINEX_TIMEOUT_SECONDS", "90")
-        )
-    )
-
-    apinex_max_output_tokens: int = field(
-        default_factory=lambda: int(
-            os.getenv("APINEX_MAX_OUTPUT_TOKENS", "4096")
-        )
     )
 
     extraction_max_attempts: int = field(
@@ -680,13 +634,12 @@ class Settings:
             or self.groq_api_key
             or self.openai_api_key
             or self.anthropic_api_key
-            or self.apinex_api_key
         )
 
     # Free allowance tiers first, metered/paid providers last. The provider
     # router walks this order so a deployment with no budget keeps working
     # on free models and only touches paid keys when free ones fail.
-    FREE_TIER_PROVIDERS = ("apinex", "groq", "gemini")
+    FREE_TIER_PROVIDERS = ("gemini", "groq")
     PAID_PROVIDERS = ("anthropic", "openai")
 
     @property
@@ -694,7 +647,6 @@ class Settings:
         """provider -> 'free' | 'paid' for every provider with a configured key."""
 
         configured = {
-            "apinex": bool(self.apinex_api_key),
             "groq": bool(self.groq_api_key),
             "gemini": bool(self.gemini_api_key),
             "anthropic": bool(self.anthropic_api_key),

@@ -74,7 +74,7 @@ def test_scoped_provider_fallback_preserves_metrics_pair_contract():
             return "answer"
 
     client = LLMClient.__new__(LLMClient)
-    client._providers = [("apinex", RateLimited()), ("groq", Available())]
+    client._providers = [("gemini", RateLimited()), ("groq", Available())]
     client._current = 0
     client.calls = 0
     client.estimated_tokens = 0
@@ -88,9 +88,9 @@ def test_scoped_provider_fallback_preserves_metrics_pair_contract():
     with client.usage_scope():
         assert client.complete("system", "question") == "answer"
         telemetry = client.telemetry()
-        assert telemetry["fallbacks"] == [("apinex", "groq")]
-        assert telemetry["fallback_routes"] == ["apinex->groq"]
-        assert _provider_chain(client) == ["apinex", "groq"]
+        assert telemetry["fallbacks"] == [("gemini", "groq")]
+        assert telemetry["fallback_routes"] == ["gemini->groq"]
+        assert _provider_chain(client) == ["gemini", "groq"]
 
 
 def test_run_history_api_merges_research_paths_and_reopens_saved_job(tmp_path, monkeypatch):
