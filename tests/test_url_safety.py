@@ -498,4 +498,3 @@ def test_search_uses_keyless_provider_without_apinex():
     from app.research.sources import build_search
 
     assert build_search().name == "duckduckgo"
-\r\n
