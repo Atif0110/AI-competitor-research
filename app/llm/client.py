@@ -419,12 +419,28 @@ _QUOTA_MARKERS = (
     "402",
 )
 
+_AUTH_FAILURE_MARKERS = (
+    "401",
+    "403",
+    "unauthorized",
+    "authentication_error",
+    "invalid api key",
+    "account suspended",
+    "missing api key",
+)
+
 
 def _looks_like_quota_error(exc: Exception) -> bool:
     """True for quota/rate-limit/availability errors worth cooling down."""
 
     text = str(exc).lower()
     return any(marker in text for marker in _QUOTA_MARKERS)
+
+
+def _looks_like_auth_error(exc: Exception) -> bool:
+    """True for provider credentials or account permissions that need repair."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _AUTH_FAILURE_MARKERS)
 
 
 class DemoClient:
@@ -596,7 +612,9 @@ class LLMClient:
 
         self._fallback_since: Optional[float] = None
         self._cooldowns: dict = {}
+        self._auth_failures: set[str] = set()
         self.cooldown_seconds = 60
+        self.auth_cooldown_seconds = 3600
 
         if settings.llm_provider == "demo" or settings.demo_mode:
             self._providers = [
@@ -688,6 +706,7 @@ class LLMClient:
             usage["calls"] += 1
 
         last_error: Optional[Exception] = None
+        provider_errors: List[str] = []
 
         if (
             self._current != 0
@@ -707,16 +726,31 @@ class LLMClient:
             for name, until in self._cooldowns.items()
             if until > now
         }
+        auth_failures = set(getattr(self, "_auth_failures", set()))
+        auth_failures = {
+            name
+            for name in auth_failures
+            if self._cooldowns.get(name, 0.0) > now
+        }
+        self._auth_failures = auth_failures
         if cooling and cooling >= {
             name for name, _ in self._providers
         }:
-            # Every provider is cooling down: clear the cooldowns rather than
-            # failing the run, and let the configured chain try again.
-            logger.warning(
-                "all providers cooling down (%s); retrying primary",
-                ", ".join(sorted(cooling)),
-            )
-            self._cooldowns.clear()
+            # Retry transient quota/availability cooldowns when every provider
+            # is unavailable, but preserve credential failures until repaired.
+            transient = cooling - auth_failures
+            if transient:
+                for name in transient:
+                    self._cooldowns.pop(name, None)
+                logger.warning(
+                    "all providers cooling down (%s); retrying transient providers",
+                    ", ".join(sorted(transient)),
+                )
+            else:
+                raise LLMError(
+                    "All configured LLM providers are in authentication cooldown "
+                    f"({', '.join(sorted(auth_failures))}); check their API keys and account status."
+                )
 
         previous_provider = self._providers[
             self._current
@@ -804,8 +838,18 @@ class LLMClient:
             except Exception as exc:
                 last_error = exc
                 self.last_error = str(exc)
+                provider_errors.append(
+                    f"{name}: {_error_excerpt(exc, limit=180)}"
+                )
 
-                if _looks_like_quota_error(exc):
+                if _looks_like_auth_error(exc):
+                    auth_failures = set(getattr(self, "_auth_failures", set()))
+                    auth_failures.add(name)
+                    self._auth_failures = auth_failures
+                    self._cooldowns[name] = (
+                        time.monotonic() + getattr(self, "auth_cooldown_seconds", 3600)
+                    )
+                elif _looks_like_quota_error(exc):
                     self._cooldowns[name] = (
                         time.monotonic() + self.cooldown_seconds
                     )
@@ -816,9 +860,8 @@ class LLMClient:
                     exc,
                 )
 
-        raise LLMError(
-            f"All configured LLM providers failed: {last_error}"
-        )
+        failure_summary = "; ".join(provider_errors) or str(last_error)
+        raise LLMError(f"All configured LLM providers failed: {failure_summary}")
 
     @property
     def provider_name(self) -> str:
